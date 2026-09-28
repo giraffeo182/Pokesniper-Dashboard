@@ -528,7 +528,8 @@ function renderNext() {
 }
 
 /* ================================================================== RESULTS */
-const RS = {sel: null, list: "", filter: "finds", q: "", sort: "deal", items: [], shown: [], limit: 240};
+// pct: hide listings over this % of market (0 = any); starts at 100
+const RS = {sel: null, list: "", filter: "finds", q: "", sort: "deal", pct: 100, items: [], shown: [], limit: 240};
 Object.assign(RS, store.get("results", {}), {sel: null, q: "", limit: 240});
 
 function runBadges(r) {
@@ -567,7 +568,7 @@ function renderResultList() {
 }
 $("#rl-filters").onclick = e => { const b = e.target.closest("[data-f]"); if (b) { RS.list = b.dataset.f; saveRS(); renderResultList(); } };
 $("#rl-body").onclick = e => { const d = e.target.closest("[data-res]"); if (d) { RS.sel = d.dataset.res; RS.limit = 240; renderResults(); } };
-function saveRS() { store.set("results", {list: RS.list, filter: RS.filter, sort: RS.sort}); }
+function saveRS() { store.set("results", {list: RS.list, filter: RS.filter, sort: RS.sort, pct: RS.pct}); }
 
 /* One shape for Card Hunter matches and ETB listings */
 function normalize(kind, r, runId) {
@@ -598,7 +599,6 @@ function normalize(kind, r, runId) {
 const FILTERS = [
   ["finds", "Finds", x => x.kind === "hunt" || x.stamped],
   ["stamped", "Stamped", x => x.stamped],
-  ["deals", "≤60% of market", x => x.pct != null && x.pct <= 60],
   ["strong", "Strong matches", x => x.strong],
   ["auction", "Auctions", x => x.auction && (x.kind === "hunt" || x.stamped)],
   ["bin", "Buy It Now", x => !x.auction && (x.kind === "hunt" || x.stamped)],
@@ -612,6 +612,9 @@ const SORTS = {
 };
 
 async function renderResults() {
+  // "deals" (≤60%) was a filter before the market % slider replaced it
+  if (!FILTERS.some(x => x[0] === RS.filter)) RS.filter = "finds";
+  if (!(RS.pct === 0 || (RS.pct >= 10 && RS.pct < PCT_ANY))) RS.pct = 100;
   renderResultList();
   if (S.results == null) {
     $("#rv-title").textContent = "Results";
@@ -641,13 +644,17 @@ async function renderResults() {
   }
   patch($("#rv-filters"), FILTERS.map(([k, t, f]) => {
     const n = RS.items.filter(f).length;
-    return (k === "stamped" || k === "deals") && !n && RS.filter !== k ? "" :
+    return k === "stamped" && !n && RS.filter !== k ? "" :
       `<button data-rf="${k}" class="${RS.filter === k ? "active" : ""}">${esc(t)}<span class="n">${n}</span></button>`;
   }).join(""));
   $("#rv-sort").value = RS.sort;
   const f = (FILTERS.find(x => x[0] === RS.filter) || FILTERS[0])[2];
   const words = RS.q.toLowerCase().split(/\s+/).filter(Boolean);
-  RS.shown = RS.items.filter(f).filter(x => words.every(w => (x.card + " " + x.title).toLowerCase().includes(w))).sort(SORTS[RS.sort]);
+  // a listing with no market price has nothing to compare, so it stays
+  const underPct = x => !RS.pct || x.pct == null || x.pct <= RS.pct;
+  renderPctSlider();
+  RS.shown = RS.items.filter(f).filter(underPct)
+    .filter(x => words.every(w => (x.card + " " + x.title).toLowerCase().includes(w))).sort(SORTS[RS.sort]);
   if (!RS.shown.length) {
     patch($("#rv-grid"), `<div class="empty" style="grid-column:1/-1"><div>${RS.items.length ? "Nothing matches these filters." : "This run found nothing new."}</div></div>`);
     return;
@@ -696,6 +703,16 @@ function listingCard(x, i) {
 }
 $("#rv-filters").onclick = e => { const b = e.target.closest("[data-rf]"); if (b) { RS.filter = b.dataset.rf; RS.limit = 240; saveRS(); renderResults(); } };
 $("#rv-sort").onchange = e => { RS.sort = e.target.value; saveRS(); renderResults(); };
+const PCT_ANY = 160;                  // the slider's far right = any
+function renderPctSlider() {
+  $("#rv-pct").value = String(RS.pct || PCT_ANY);
+  $("#rv-pct-v").textContent = RS.pct ? `≤ ${RS.pct}%` : "any";
+}
+$("#rv-pct").addEventListener("input", e => {
+  const v = +e.target.value;
+  RS.pct = v >= PCT_ANY ? 0 : v; RS.limit = 240;
+  saveRS(); renderResults();
+});
 $("#rv-search").addEventListener("input", e => { RS.q = e.target.value; renderResults(); });
 $("#rv-grid").onclick = e => { const c = e.target.closest("[data-i]"); if (c) openReview(+c.dataset.i); };
 

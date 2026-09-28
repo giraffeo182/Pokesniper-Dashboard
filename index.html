@@ -328,6 +328,11 @@ input::placeholder { color: var(--faint); }
 .toast b { display: block; margin-bottom: 2px; }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
 
+/* results: market % slider */
+.pct-f { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.pct-f input { width: 150px; accent-color: var(--accent); }
+.pct-f b { min-width: 4.2em; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+
 /* promo picker (ETB Scanner) */
 .dd-btn { width: 100%; display: flex; align-items: center; gap: 8px; background: var(--panel-2); border: 1px solid var(--border-2);
           border-radius: 7px; padding: 8px 10px; cursor: pointer; text-align: left; }
@@ -591,6 +596,11 @@ input::placeholder { color: var(--faint); }
         <div class="sub" id="rv-sub"></div>
         <div class="vh-row">
           <div class="filters" id="rv-filters"></div>
+          <label class="pct-f" title="What you'd pay delivered, as a % of the TCGplayer market price. Listings with no market price (ETB promos) always show.">
+            <span class="hint">Market %</span>
+            <input type="range" id="rv-pct" min="10" max="160" step="5" value="100">
+            <b id="rv-pct-v">≤ 100%</b>
+          </label>
           <span class="spacer"></span>
           <input type="search" id="rv-search" placeholder="Search card or title…" autocomplete="off">
           <select id="rv-sort">
