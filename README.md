@@ -7,4 +7,4 @@ This repo holds only the page. It contains no cards, results or keys. After you 
 - `index.html`: the page and its styles
 - `app.js`: everything it does
 
-Served by GitHub Pages from `main`, at the repo root.
+Published to GitHub Pages by `.github/workflows/pages.yml` on every push to `main`.
