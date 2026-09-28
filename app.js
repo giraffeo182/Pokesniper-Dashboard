@@ -31,7 +31,8 @@ const WORKFLOW = "scan.yml";
 const WORKFLOW_PATH = ".github/workflows/" + WORKFLOW;
 const EBAY_DAILY = 5000;
 const ACTIONS_MONTHLY = 2000;        // free plan, private repo
-const ETB_CALLS = 28;                // 27 promos + token
+// ETB Scanner: one eBay call per promo that's switched on, plus the token
+const etbCalls = () => (S.promos.length ? S.promos.filter(p => !(S.settings?.etb_off || []).includes(p.key)).length : 27) + 1;
 const LANGS = ["japanese", "korean", "chinese", "thai", "indonesian"];
 const DEMO = new URLSearchParams(location.search).has("demo");
 
@@ -39,6 +40,7 @@ const S = {
   token: "", repo: "",
   cfg: null, cfgSha: null,           // cards.json
   prices: {cards: {}},
+  promos: [],                        // promos.json: the ETB Scanner's promos
   settings: {}, settingsSha: null,
   yml: "", ymlSha: null,
   changelog: null,
@@ -157,11 +159,14 @@ async function saveFile(path, mutate, message) {
 /* ------------------------------------------------------------------ loading */
 async function loadConfig() {
   // Prices: the newest run's copy, else whatever was last pushed to main
-  const [cards, prices, settings, yml, changelog, tree] = await Promise.allSettled([
+  const [cards, prices, settings, yml, changelog, tree, promos] = await Promise.allSettled([
     getFile("cards.json"), getRaw("prices.json", "results").catch(() => getRaw("prices.json", "main")), getFile("settings.json"),
     getFile(WORKFLOW_PATH), getRaw("changelog.json", "main"),
-    gh(repoPath("/git/trees/main?recursive=1")),
+    gh(repoPath("/git/trees/main?recursive=1")), getRaw("promos.json", "main"),
   ]);
+  if (promos.status === "fulfilled") try {
+    S.promos = JSON.parse(promos.value).promos.map(p => ({...p, key: `${p.name} ${p.number}`}));
+  } catch (e) {}
   if (cards.status === "rejected") throw cards.reason;
   S.cfg = JSON.parse(cards.value.text); S.cfgSha = cards.value.sha;
   if (prices.status === "fulfilled") try { S.prices = JSON.parse(prices.value); } catch (e) {}
@@ -228,7 +233,7 @@ function cardRows(pendingAware = true) {
 }
 const tcgImg = (id, size = "200w") => id ? `https://tcgplayer-cdn.tcgplayer.com/product/${id}_${size}.jpg` : "";
 const enabledCards = () => cardRows(false).filter(c => c.enabled);
-const callsPerRun = (cards, etb = true) => cards.reduce((n, c) => n + c.queries, 0) + (etb ? ETB_CALLS : 0);
+const callsPerRun = (cards, etb = true) => cards.reduce((n, c) => n + c.queries, 0) + (etb ? etbCalls() : 0);
 
 /* Average billed minutes of recent successful runs, else a guess from card count */
 function minutesPerRun() {
@@ -311,7 +316,7 @@ function runArgs() {
 function renderRunCost() {
   const etb = $("#rn-etb").checked, hunter = $("#rn-hunter").checked;
   const cards = RN.cards.length ? cardRows(false).filter(c => RN.cards.includes(c.key)) : enabledCards();
-  const calls = (hunter ? callsPerRun(cards, false) : 0) + (etb ? ETB_CALLS : 0);
+  const calls = (hunter ? callsPerRun(cards, false) : 0) + (etb ? etbCalls() : 0);
   $("#rn-cost").textContent = etb || hunter ? `≈ ${calls.toLocaleString()} eBay calls` : "Nothing selected";
   $("#rn-go").disabled = !(etb || hunter);
 }
@@ -892,9 +897,9 @@ async function loadCatalog() {
   if (CAT.sets || CAT.loading) return;
   CAT.loading = true;
   try {
-    const [sets, today] = await Promise.all([getRaw("catalog/sets.json", "main"),
+    const [setsText, today] = await Promise.all([getRaw("catalog/sets.json", "main"),
       getRaw("catalog_prices.json", "results").then(JSON.parse).catch(() => null)]);
-    CAT.sets = JSON.parse(sets);
+    CAT.sets = JSON.parse(setsText);
     if (today && today.prices) { CAT.today = today.prices; CAT.todayAt = today.updated; }
     for (const era of CAT.sets.eras || []) for (const st of era.sets) CAT.bySlug.set(st.slug, {...st, era: era.name});
     // prices for cards added since the last run live in their set's file
@@ -1292,7 +1297,7 @@ const ST = {dirty: false, form: null};
 function settingsForm() {
   const s = S.settings || {}, c = s.cloud || {};
   return {type: c.type || "both", hours: c.auction_hours ?? 5, pct: c.price_pct ?? "", zip: s.ship_to_zip || "",
-          off: new Set(s.exclude_languages || [])};
+          off: new Set(s.exclude_languages || []), etbOff: new Set(s.etb_off || [])};
 }
 function renderSettings() {
   if (!ST.dirty || !ST.form) ST.form = settingsForm();
@@ -1303,12 +1308,42 @@ function renderSettings() {
   if (document.activeElement?.id !== "st-zip") $("#st-zip").value = f.zip;
   $("#st-langs").innerHTML = `<label class="check"><input type="checkbox" checked disabled> English</label>` +
     LANGS.map(l => `<label class="check"><input type="checkbox" data-lang="${l}" ${f.off.has(l) ? "" : "checked"}> ${l[0].toUpperCase() + l.slice(1)}</label>`).join("");
+  renderPromos(f);
   $("#st-save").disabled = !ST.dirty;
   $("#st-state").textContent = ST.dirty ? "Unsaved changes" : "";
   $("#st-account").innerHTML = `Signed in to <b>${esc(S.repo)}</b>${DEMO ? " (demo data)" : ""}. The token is saved in this browser only.
     To use the dashboard on another device, sign in there with the same token.`;
 }
 function stDirty() { ST.dirty = true; renderSettings(); }
+
+// ETB promos: every one is on unless it's in settings.json's etb_off
+function renderPromos(f) {
+  const list = S.promos, on = list.filter(p => !f.etbOff.has(p.key)).length;
+  $("#etb-dd-label").textContent = !list.length ? "Couldn't load promos.json" : on === list.length ? `All ${list.length} promos` :
+    on === 0 ? "No promos selected: the ETB Scanner will search nothing" : `${on} of ${list.length} promos`;
+  $("#etb-dd-btn").classList.toggle("none", list.length > 0 && on === 0);
+  $("#etb-dd-count").textContent = `${on} of ${list.length} on`;
+  let html = "", set = null;
+  for (const p of list) {
+    if (p.set !== set) { set = p.set; html += `<div class="dd-set">${esc(set)}</div>`; }
+    html += `<label class="dd-item"><input type="checkbox" data-promo="${esc(p.key)}" ${f.etbOff.has(p.key) ? "" : "checked"}>
+      <span>${esc(p.name)}</span><span class="num">${esc(p.number)}</span></label>`;
+  }
+  const el = $("#etb-dd-list"), top = el.scrollTop;
+  patch(el, html);
+  el.scrollTop = top;
+}
+$("#etb-dd-btn").onclick = () => {
+  const open = $("#etb-dd-panel").classList.toggle("hidden") === false;
+  $("#etb-dd-btn").setAttribute("aria-expanded", open);
+};
+$("#etb-dd-list").addEventListener("change", e => {
+  const k = e.target.dataset.promo; if (!k) return;
+  if (e.target.checked) ST.form.etbOff.delete(k); else ST.form.etbOff.add(k);
+  stDirty();
+});
+$("#etb-all").onclick = () => { ST.form.etbOff.clear(); stDirty(); };
+$("#etb-none").onclick = () => { ST.form.etbOff = new Set(S.promos.map(p => p.key)); stDirty(); };
 $("#st-type").onclick = e => { const b = e.target.closest("[data-v]"); if (b) { ST.form.type = b.dataset.v; stDirty(); } };
 $("#st-hours").addEventListener("input", e => { ST.form.hours = e.target.value; stDirty(); });
 $("#st-pct").addEventListener("input", e => { ST.form.pct = e.target.value; stDirty(); });
@@ -1331,6 +1366,7 @@ $("#st-save").onclick = async () => {
       const d = JSON.parse(text || "{}");
       d.ship_to_zip = f.zip.trim();
       d.exclude_languages = LANGS.filter(l => f.off.has(l));
+      if (S.promos.length) d.etb_off = S.promos.map(p => p.key).filter(k => f.etbOff.has(k));
       d.cloud = {...(d.cloud || {}), auction_hours: hours, price_pct: pct === 100 ? null : pct, type: f.type};
       return JSON.stringify(d, null, 2) + "\n";
     }, "Dashboard: update settings");

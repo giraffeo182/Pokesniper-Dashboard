@@ -328,6 +328,23 @@ input::placeholder { color: var(--faint); }
 .toast b { display: block; margin-bottom: 2px; }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
 
+/* promo picker (ETB Scanner) */
+.dd-btn { width: 100%; display: flex; align-items: center; gap: 8px; background: var(--panel-2); border: 1px solid var(--border-2);
+          border-radius: 7px; padding: 8px 10px; cursor: pointer; text-align: left; }
+.dd-btn:hover { border-color: var(--faint); }
+.dd-btn span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dd-btn svg { width: 16px; height: 16px; flex: none; color: var(--muted); transition: transform .15s; }
+.dd-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+.dd-btn.none span { color: var(--bad); }
+.dd-panel { margin-top: 6px; border: 1px solid var(--border-2); border-radius: 8px; background: var(--panel-2); overflow: hidden; }
+.dd-head { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.dd-list { max-height: 320px; overflow-y: auto; padding: 4px 0; }
+.dd-set { padding: 6px 12px 2px; font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); }
+.dd-item { display: flex; align-items: center; gap: 10px; padding: 6px 12px; cursor: pointer; font-size: 13.5px; }
+.dd-item:hover { background: var(--panel-3); }
+.dd-item input { accent-color: var(--accent); margin: 0; width: 16px; height: 16px; }
+.dd-item .num { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+
 /* catalog: eras -> sets -> cards */
 .cmode { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .cmode.searching { flex: none; }
@@ -749,6 +766,25 @@ input::placeholder { color: var(--faint); }
           <div class="field"><label for="st-pct">Price cap, % of market</label>
             <div class="suffix"><input type="number" id="st-pct" min="1" max="500" step="5" placeholder="100"> %</div>
             <span class="hint">80 = only listings at 80% of market or less, shipping included.</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>ETB Scanner</h2>
+        <p>Which ETB promos every run searches for new listings. Each one is an eBay call per run.</p>
+        <div class="dd" id="etb-dd">
+          <button class="dd-btn" id="etb-dd-btn" aria-expanded="false" aria-controls="etb-dd-panel">
+            <span id="etb-dd-label">All promos</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <div class="dd-panel hidden" id="etb-dd-panel">
+            <div class="dd-head">
+              <button class="btn ghost sm" id="etb-all">Select all</button>
+              <button class="btn ghost sm" id="etb-none">Deselect all</button>
+              <span class="spacer"></span>
+              <span class="hint" id="etb-dd-count"></span>
+            </div>
+            <div class="dd-list" id="etb-dd-list"></div>
+          </div>
         </div>
       </div>
       <div class="card">
