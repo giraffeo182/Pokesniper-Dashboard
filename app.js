@@ -6,7 +6,9 @@
  *   - Results: what each run found, read from the private repo's `results`
  *     branch (written by publish_results.py after every run)
  *   - Cards / Settings / Schedule: edit cards.json, settings.json and the
- *     workflow's schedule, each saved as a commit on `main`
+ *     workflow's schedule, each saved as a commit on `main`. Cards also
+ *     browses catalog/ (every set from Sword & Shield on, built by
+ *     catalog.py), and ticking a card there adds it to cards.json
  */
 "use strict";
 
@@ -203,21 +205,24 @@ async function runData(id) {
 function cardRows(pendingAware = true) {
   const table = (S.prices && S.prices.cards) || {};
   const pct = num(S.settings?.cloud?.price_pct) ?? num(S.cfg?.defaults?.price_pct) ?? 100;
-  return (S.cfg?.cards || []).map(c => {
+  const adds = pendingAware ? [...Cd.adds.values()].filter(c => Cd.pending.get(c.key)) : [];
+  return [...(S.cfg?.cards || []), ...adds].map(c => {
     const p = table[c.key] || {};
-    const market = num(p.market);
+    const market = num(p.market) ?? num(c._market) ?? num(CAT.market.get(c.key));
     let cap = num(c.max_price), source = "manual";
     if (cap == null) { cap = market != null ? Math.round(market * pct) / 100 : num(S.cfg?.defaults?.max_price); source = market != null ? "market" : "default"; }
     const label = c.label || c.key;
     const [nameNum, setName] = label.split(" — ");
     const m = /-(\d+)-[a-z-]+$/.exec(c.key);
-    const saved = c.enabled !== false;
+    const saved = !c._new && c.enabled !== false;
     const enabled = pendingAware && Cd.pending.has(c.key) ? Cd.pending.get(c.key) : saved;
     return {
-      key: c.key, label, name: (nameNum || label).replace(/\s+\d+$/, "").trim(),
+      key: c.key, label, name: (nameNum || label).replace(/\s+[A-Z]*\d+[a-z]?$/, "").trim(),
       number: p.number || (m ? m[1] : ""), set: setName || "Other", rarity: p.rarity || "",
       enabled, saved, queries: (c.queries || [c.key]).length,
-      market, cap, source, tcg: p.tcgplayer_id, hasRef: S.refs.has(c.key),
+      market, cap, source, tcg: p.tcgplayer_id || c.tcgplayer_id,
+      // Card Hunter fetches TCGplayer's scan for a card that has a product id
+      hasRef: S.refs.has(c.key) || !!c.tcgplayer_id,
     };
   });
 }
@@ -284,7 +289,7 @@ function show(view) {
   $$("#nav button").forEach(b => b.classList.toggle("active", b.dataset.view === view));
   $$(".view").forEach(v => v.classList.toggle("hidden", v.id !== "view-" + view));
   store.set("view", view);
-  ({run: renderRun, results: renderResults, cards: renderCards, schedule: renderSchedule, settings: renderSettings}[view] || (() => {}))();
+  ({run: renderRun, results: renderResults, cards: () => { renderCards(); loadCatalog(); }, schedule: renderSchedule, settings: renderSettings}[view] || (() => {}))();
 }
 $("#nav").onclick = e => { const b = e.target.closest("[data-view]"); if (b) show(b.dataset.view); };
 document.addEventListener("click", e => { const b = e.target.closest("[data-goto]"); if (b) show(b.dataset.goto); });
@@ -744,8 +749,10 @@ document.addEventListener("keydown", e => {
 })();
 
 /* ================================================================== CARDS */
-const Cd = {q: "", set: "", status: "", sort: "set", pending: new Map()};
-Object.assign(Cd, store.get("cardsView", {}), {q: "", pending: new Map()});
+// pending: key -> on/off, not saved yet. adds: catalog cards being switched
+// on that aren't in cards.json yet, as the entries Save will add.
+const Cd = {q: "", set: "", status: "", sort: "set", pending: new Map(), adds: new Map()};
+Object.assign(Cd, store.get("cardsView", {}), {q: "", pending: new Map(), adds: new Map()});
 const cardNum = c => parseInt(String(c.number).split("/")[0], 10) || 0;
 
 function visibleCards() {
@@ -802,6 +809,8 @@ function renderCards() {
   }
   $("#c-rows").innerHTML = html || `<tr><td colspan="8" class="empty">No cards match.</td></tr>`;
   $$("[data-mixed]").forEach(el => el.indeterminate = true);
+  $("#c-mine-n").textContent = on.length;
+  renderCatalog();
   const n = Cd.pending.size;
   $("#c-savebar").classList.toggle("hidden", !n);
   $("#c-pending").textContent = n ? `${plural(n, "unsaved change")}` : "";
@@ -809,7 +818,8 @@ function renderCards() {
 function setEnabled(keys, enabled) {
   const saved = new Map(cardRows(false).map(c => [c.key, c.enabled]));
   for (const k of keys) {
-    if (saved.get(k) === enabled) Cd.pending.delete(k); else Cd.pending.set(k, enabled);
+    if (Cd.adds.has(k) && !enabled) { Cd.adds.delete(k); Cd.pending.delete(k); }   // never saved: just drop it
+    else if (saved.get(k) === enabled) Cd.pending.delete(k); else Cd.pending.set(k, enabled);
   }
   renderCards();
 }
@@ -829,23 +839,32 @@ $("#c-off").onclick = () => {
   if (keys.length > 10 && !confirm(`Turn off all ${keys.length} cards shown?`)) return;
   setEnabled(keys, false);
 };
-$("#c-discard").onclick = () => { Cd.pending.clear(); renderCards(); };
+$("#c-discard").onclick = () => { Cd.pending.clear(); Cd.adds.clear(); renderCards(); };
 $("#c-save").onclick = async () => {
   const changes = new Map(Cd.pending), btn = $("#c-save");
-  const on = [...changes.values()].filter(Boolean).length, off = changes.size - on;
-  const msg = "Dashboard: " + [on && `turn on ${plural(on, "card")}`, off && `turn off ${plural(off, "card")}`].filter(Boolean).join(", ");
+  const adds = [...Cd.adds.values()].filter(c => changes.get(c.key));
+  const added = adds.length, on = [...changes.values()].filter(Boolean).length - added, off = changes.size - added - on;
+  const msg = "Dashboard: " + [added && `add ${plural(added, "card")}`, on && `turn on ${plural(on, "card")}`,
+                               off && `turn off ${plural(off, "card")}`].filter(Boolean).join(", ");
   btn.disabled = true; btn.textContent = "Saving…";
   try {
     const r = await saveFile("cards.json", text => {
       const cfg = JSON.parse(text);
+      const have = new Set();
       for (const c of cfg.cards) {
+        have.add(c.key);
+        if (c.tcgplayer_id) have.add("#" + c.tcgplayer_id);
         if (!changes.has(c.key)) continue;
         if (changes.get(c.key)) delete c.enabled; else c.enabled = false;
+      }
+      for (const a of adds) {
+        if (have.has(a.key) || have.has("#" + a.tcgplayer_id)) continue;     // added elsewhere meanwhile
+        cfg.cards.push(Object.fromEntries(Object.entries(a).filter(([k]) => !k.startsWith("_"))));
       }
       return JSON.stringify(cfg, null, 2) + "\n";
     }, msg);
     S.cfg = JSON.parse(r.text); S.cfgSha = r.sha;
-    Cd.pending.clear();
+    Cd.pending.clear(); Cd.adds.clear();
     toast("Saved", "The next run uses these cards.", "good");
   } catch (e) {
     if (e.status !== 401) toast("Couldn't save", e.message, "bad");
@@ -855,6 +874,242 @@ $("#c-save").onclick = async () => {
   }
 };
 window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty || ST.dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+/* ================================================================== CATALOG */
+// catalog/ on main, built by catalog.py: eras -> sets -> every card, from
+// Sword & Shield through Mega Evolution. Loaded on first visit to Cards.
+// market: the catalog's price per key, for cards added since the last run
+const CAT = {sets: null, bySlug: new Map(), data: new Map(), all: null, error: "", market: new Map()};
+const CS = {mode: "sets", slug: null, q: "", gq: "", rarity: "", status: "", variants: false, sort: "number", shown: []};
+Object.assign(CS, store.get("catalogView", {}), {q: "", gq: "", slug: null, shown: []});
+const saveCatalogView = () => store.set("catalogView", {mode: CS.mode === "set" ? "sets" : CS.mode, variants: CS.variants, sort: CS.sort});
+const TICK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
+const fmtRelease = iso => new Date(iso + "T12:00:00").toLocaleDateString([], {month: "long", day: "numeric", year: "numeric"});
+
+async function loadCatalog() {
+  if (CAT.sets || CAT.loading) return;
+  CAT.loading = true;
+  try {
+    CAT.sets = JSON.parse(await getRaw("catalog/sets.json", "main"));
+    for (const era of CAT.sets.eras || []) for (const st of era.sets) CAT.bySlug.set(st.slug, {...st, era: era.name});
+    // prices for cards added since the last run live in their set's file
+    const table = S.prices?.cards || {};
+    const sets = new Set((S.cfg?.cards || []).filter(c => c.tcgplayer_id && !table[c.key]).map(c => setOfKey(c.key)).filter(Boolean));
+    Promise.all([...sets].map(sl => loadSet(sl).catch(() => null))).then(() => sets.size && renderCards());
+  } catch (e) {
+    CAT.error = e.status === 404 ? "none" : e.message;
+    CAT.sets = {eras: []};
+  } finally { CAT.loading = false; }
+  renderCatalog();
+}
+async function loadSet(slug) {
+  if (!CAT.data.has(slug)) CAT.data.set(slug, getRaw(`catalog/sets/${slug}.json`, "main").then(JSON.parse)
+    .then(d => { for (const c of d.cards) if (c.market != null) CAT.market.set(c.key, c.market); return d; })
+    .catch(e => { CAT.data.delete(slug); throw e; }));
+  return CAT.data.get(slug);
+}
+async function loadAllSets() {
+  if (!CAT.all) {
+    // a few at a time: 46 files at once is rude to GitHub and slow on a phone
+    const slugs = [...CAT.bySlug.keys()], out = new Array(slugs.length);
+    CAT.all = (async () => {
+      let next = 0;
+      await Promise.all(Array.from({length: 6}, async () => {
+        while (next < slugs.length) { const i = next++; out[i] = await loadSet(slugs[i]).catch(() => null); }
+      }));
+      return out;
+    })();
+  }
+  return CAT.all;
+}
+// The set a cards.json key belongs to: the longest slug it ends with, since
+// "-promo" (Scarlet & Violet) is also the end of "-me-promo"
+function setOfKey(key) {
+  let best = "";
+  for (const slug of CAT.bySlug.keys()) if (slug.length > best.length && key.endsWith("-" + slug)) best = slug;
+  return best;
+}
+function mine() {
+  const byKey = new Map(), byId = new Map();
+  for (const c of cardRows()) { byKey.set(c.key, c); if (c.tcg) byId.set(+c.tcg, c); }
+  return {byKey, byId};
+}
+// the cards.json row a catalog card is, if any; the product id catches a card
+// added by hand under a different key
+const rowFor = (c, m) => m.byKey.get(c.key) || m.byId.get(+c.id);
+
+// The same entry catalog.py's card_entry() writes: same label, same two searches
+const NOTES_RX = /\(([^)]*)\)|\[([^\]]*)\]/g;
+const slugify = t => t.normalize("NFKD").replace(/[^\x00-\x7f]/g, "").toLowerCase().replace(/['’`.]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+const searchName = n => n.replace(NOTES_RX, "").replace(/\s+/g, " ").trim().toLowerCase();
+function numberKey(n) { const h = String(n).split("/")[0].trim(); return /^\d+$/.test(h) ? (h.replace(/^0+/, "") || "0") : slugify(h); }
+function catalogEntry(c, setName) {
+  const num = c.number ? numberKey(c.number) : "", full = searchName(c.name);
+  const bare = full.replace(/\s+(ex|gx|v|vmax|vstar|v-union|break|lv\.?\s*x)$/i, "");
+  return {key: c.key, label: [c.name, num.toUpperCase()].filter(Boolean).join(" ") + " — " + setName,
+          queries: [bare, ...(num ? [`${full} ${num}`] : [])], tcgplayer_id: c.id, tcgplayer_group: c.group,
+          _new: true, _market: c.market};
+}
+
+function renderCatalog() {
+  if (!$("#cs-sets")) return;
+  $$("#c-mode button").forEach(b => b.classList.toggle("active", b.dataset.mode === (CS.mode === "set" ? "sets" : CS.mode)));
+  // searching every set keeps the search box and shows the results below it
+  const searching = CS.mode === "sets" && !!CS.gq;
+  $("#cm-sets").classList.toggle("hidden", CS.mode !== "sets");
+  $("#cm-sets").classList.toggle("searching", searching);
+  $("#cs-sets").classList.toggle("hidden", searching);
+  $("#cm-set").classList.toggle("hidden", !(CS.mode === "set" || searching));
+  $("#cm-set").classList.toggle("global", searching);
+  $("#cm-mine").classList.toggle("hidden", CS.mode !== "mine");
+  if (CS.mode === "sets" && !searching) renderSetTiles();
+  else if (CS.mode === "set" || searching) renderSetCards();
+}
+
+function renderSetTiles() {
+  if (!CAT.sets) { $("#cs-sets").innerHTML = `<div class="empty">Loading sets…</div>`; return; }
+  const eras = CAT.sets.eras || [];
+  if (!eras.length) {
+    $("#cs-sets").innerHTML = `<div class="empty"><div>${CAT.error === "none" || !CAT.error
+      ? "No card catalog in the repo yet.<br><span class=\"muted\">Run <span class=\"mono\">python catalog.py</span> on the PC, then Push to GitHub.</span>"
+      : "Couldn't load the card catalog: " + esc(CAT.error)}</div></div>`;
+    return;
+  }
+  const counts = new Map();
+  for (const c of cardRows()) if (c.enabled) { const sl = setOfKey(c.key); counts.set(sl, (counts.get(sl) || 0) + 1); }
+  const nSets = eras.reduce((n, e) => n + e.sets.length, 0);
+  $("#cs-summary").textContent = `${(CAT.sets.cards || 0).toLocaleString()} cards in ${nSets} sets`;
+  patch($("#cs-sets"), eras.map(era => `<div class="era"><h3>${esc(era.name)}</h3><div class="sgrid">${era.sets.map(st => {
+    const n = counts.get(st.slug) || 0;
+    const logo = st.logo ? `<img src="${esc(safeUrl(st.logo))}" alt="" loading="lazy">` : `<span class="code">${esc(st.code)}</span>`;
+    return `<button class="stile" data-slug="${esc(st.slug)}">
+      <div class="slogo">${logo}</div>
+      <div class="sinfo"><div class="sname">${esc(st.name)}</div><div class="sdate">${esc(fmtRelease(st.date))}</div>
+        <div class="sfoot"><span>${plural(st.count, "card")}</span>${n ? `<span class="hunting">${n} hunting</span>` : ""}
+          ${st.code ? `<span class="code">${esc(st.code)}</span>` : ""}</div></div></button>`;
+  }).join("")}</div></div>`).join(""));
+}
+
+const catNum = c => { const m = /(\d+)/.exec(String(c.number)); return m ? +m[1] : 0; };
+async function renderSetCards() {
+  const global = CS.mode === "sets" && !!CS.gq;
+  let cards;
+  if (global) {
+    if (!CAT.all) $("#cs-cards").innerHTML = `<div class="empty">Loading every set…</div>`;
+    const sets = await loadAllSets();
+    if (!(CS.mode === "sets" && CS.gq)) return;            // changed while loading
+    cards = sets.filter(Boolean).flatMap(d => d.cards.map(c => ({...c, _set: d.name})));
+  } else {
+    const st = CAT.bySlug.get(CS.slug);
+    if (!st) { CS.mode = "sets"; return renderCatalog(); }
+    $("#cs-title").innerHTML = (st.logo ? `<img src="${esc(safeUrl(st.logo))}" alt="">` : "") +
+      `<div><b>${esc(st.name)}</b><div class="hint">${esc(st.era)} · ${esc(fmtRelease(st.date))} · ${plural(st.count, "card")}${st.code ? " · " + esc(st.code) : ""}</div></div>`;
+    if (!CAT.data.has(CS.slug)) $("#cs-cards").innerHTML = `<div class="empty">Loading ${esc(st.name)}…</div>`;
+    let data;
+    try { data = await loadSet(CS.slug); } catch (e) {
+      if (e.status !== 401) $("#cs-cards").innerHTML = `<div class="empty">Couldn't load this set: ${esc(e.message)}</div>`;
+      return;
+    }
+    if (CS.mode !== "set" || CS.slug !== st.slug) return;
+    cards = data.cards.map(c => ({...c, _set: data.name}));
+  }
+  const m = mine();
+  const words = (global ? CS.gq : CS.q).toLowerCase().split(/\s+/).filter(Boolean);
+  const nVariants = cards.filter(c => c.variant).length;
+  $("#cs-variants-l").classList.toggle("hidden", !nVariants);
+  $("#cs-variants").checked = CS.variants;
+  $("#cs-variants-t").textContent = `Variants (${nVariants.toLocaleString()})`;
+  const rarities = [...new Set(cards.map(c => c.rarity).filter(Boolean))];
+  if (CS.rarity && !rarities.includes(CS.rarity)) CS.rarity = "";
+  $("#cs-rarity").innerHTML = [["", "All rarities"], ...rarities.map(r => [r, r])].map(([v, t]) =>
+    `<option value="${esc(v)}" ${CS.rarity === v ? "selected" : ""}>${esc(t)}</option>`).join("");
+  $$("#cs-status button").forEach(b => b.classList.toggle("active", b.dataset.status === CS.status));
+  $("#cs-sort").value = CS.sort;
+
+  let list = cards.filter(c => {
+    const row = rowFor(c, m), on = !!(row && row.enabled);
+    return (CS.variants || !c.variant) && (!CS.rarity || c.rarity === CS.rarity) && (!CS.status || (CS.status === "on") === on) &&
+      words.every(w => [c.name, c.number, c.rarity, c.variant || "", global ? c._set : ""].join(" ").toLowerCase().includes(w));
+  });
+  const by = {
+    name: (a, b) => a.name.localeCompare(b.name) || catNum(a) - catNum(b),
+    "market-desc": (a, b) => (b.market ?? -1) - (a.market ?? -1),
+    "market-asc": (a, b) => (a.market ?? 1e9) - (b.market ?? 1e9),
+  }[CS.sort];                                   // "number": the catalog is already in set order
+  if (by) list = [...list].sort(by);
+  const shown = global ? list.slice(0, 300) : list;
+  const onHere = list.filter(c => { const r = rowFor(c, m); return r && r.enabled; }).length;
+  $("#cs-count").textContent = `${plural(list.length, "card")}${shown.length < list.length ? ` (first ${shown.length} shown)` : ""} · ${onHere} hunting`;
+  CS.shown = list;
+  patch($("#cs-cards"), shown.map(c => {
+    const row = rowFor(c, m), on = !!(row && row.enabled), changed = !!row && row.enabled !== row.saved;
+    return `<button class="ccard ${on ? "on" : ""} ${changed ? "changed" : ""}" data-key="${esc(c.key)}" data-id="${esc(c.id)}"
+        title="${esc(`${c.name} ${c.number}${c.variant ? " · " + c.variant : ""} · ${c.rarity}\n${on ? "Hunting. Tap to stop." : "Tap to hunt this card."}`)}">
+      <div class="art"><img loading="lazy" src="${esc(tcgImg(c.id))}" alt=""></div>
+      <span class="tick">${TICK}</span>
+      <div class="nm">${esc(c.name)}</div>
+      <div class="meta"><span>${esc(c.number)}</span><span class="rar">${esc(c.rarity)}</span><span class="mk">${money(c.market)}</span></div>
+      ${c.variant ? `<div class="var">${esc(c.variant)}</div>` : ""}
+      ${global ? `<div class="from">${esc(c._set)}</div>` : ""}</button>`;
+  }).join("") || `<div class="empty">No cards match.</div>`);
+}
+
+// Tick or untick catalog cards: ones already in cards.json flip like the
+// table's checkboxes; new ones queue up as entries to add on Save
+function huntCatalog(cards, on) {
+  const m = mine();
+  const flip = [];
+  for (const c of cards) {
+    const row = rowFor(c, m);
+    if (row && !Cd.adds.has(row.key)) { flip.push(row.key); continue; }
+    if (on) { Cd.adds.set(c.key, catalogEntry(c, c._set)); Cd.pending.set(c.key, true); }
+    else { Cd.adds.delete(c.key); Cd.pending.delete(c.key); }
+  }
+  if (flip.length) setEnabled(flip, on); else renderCards();
+}
+function openSet(slug) {
+  CS.mode = "set"; CS.slug = slug; CS.q = ""; CS.rarity = ""; CS.status = ""; $("#cs-search").value = "";
+  renderCatalog(); window.scrollTo(0, 0); $("#cm-set .cdb-body").scrollTop = 0;
+}
+$("#c-mode").onclick = e => {
+  const b = e.target.closest("[data-mode]");
+  if (!b) return;
+  CS.mode = b.dataset.mode; CS.gq = ""; $("#cs-gsearch").value = "";
+  saveCatalogView(); renderCatalog();
+};
+$("#cs-sets").onclick = e => { const t = e.target.closest("[data-slug]"); if (t) openSet(t.dataset.slug); };
+$("#cs-back").onclick = () => { CS.mode = "sets"; CS.gq = ""; $("#cs-gsearch").value = ""; renderCatalog(); };
+let gsTimer = null;
+$("#cs-gsearch").addEventListener("input", e => {
+  clearTimeout(gsTimer);
+  gsTimer = setTimeout(() => { const v = e.target.value.trim(); CS.gq = v.length >= 2 ? v : ""; renderCatalog(); }, 250);
+});
+$("#cs-search").addEventListener("input", e => { CS.q = e.target.value; renderSetCards(); });
+$("#cs-rarity").onchange = e => { CS.rarity = e.target.value; renderSetCards(); };
+$("#cs-sort").onchange = e => { CS.sort = e.target.value; saveCatalogView(); renderSetCards(); };
+$("#cs-variants").onchange = e => { CS.variants = e.target.checked; saveCatalogView(); renderSetCards(); };
+$("#cs-status").onclick = e => { const b = e.target.closest("[data-status]"); if (b) { CS.status = b.dataset.status; renderSetCards(); } };
+$("#cs-cards").onclick = e => {
+  const t = e.target.closest("[data-key]");
+  if (!t) return;
+  const c = CS.shown.find(x => x.key === t.dataset.key);
+  if (c) huntCatalog([c], !t.classList.contains("on"));
+};
+function shownWhere(on) {
+  const m = mine();
+  return CS.shown.filter(c => { const r = rowFor(c, m); return !!(r && r.enabled) === on; });
+}
+$("#cs-on").onclick = () => {
+  const cards = shownWhere(false);
+  const perDay = runsPerDay(parseSchedule(S.yml)) || 1;
+  if (cards.length > 25 && !confirm(`Hunt all ${cards.length} cards shown? That's about ${(cards.length * 2 * perDay).toLocaleString()} more eBay calls a day (you get ${EBAY_DAILY.toLocaleString()}).`)) return;
+  huntCatalog(cards, true);
+};
+$("#cs-off").onclick = () => {
+  const cards = shownWhere(true);
+  if (cards.length > 10 && !confirm(`Stop hunting all ${cards.length} cards shown?`)) return;
+  huntCatalog(cards, false);
+};
 
 /* ================================================================== SCHEDULE */
 const SCHED_RE = /(  # --- schedule start ---\r?\n)([\s\S]*?)(  # --- schedule end ---)/;

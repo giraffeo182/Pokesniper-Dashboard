@@ -328,6 +328,54 @@ input::placeholder { color: var(--faint); }
 .toast b { display: block; margin-bottom: 2px; }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
 
+/* catalog: eras -> sets -> cards */
+.cmode { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cmode.searching { flex: none; }
+#cm-set.global .cdb-row:first-child, #cm-set.global #cs-search { display: none; }
+#c-mode button { padding: 4px 12px; }
+.era { padding: 16px 16px 4px; }
+.era h3 { margin: 0 0 10px; font-size: 15px; font-weight: 650; color: var(--muted); }
+.sgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.stile { display: flex; gap: 14px; align-items: stretch; padding: 8px; border-radius: 12px; border: 1px solid var(--border);
+         background: var(--panel-2); cursor: pointer; text-align: left; color: inherit; font: inherit; min-width: 0; }
+.stile:hover { border-color: var(--border-2); background: var(--panel-3); }
+.stile:focus-visible, .ccard:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.slogo { width: 128px; height: 104px; flex: none; border-radius: 9px; display: grid; place-items: center; padding: 10px;
+         background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--accent) 18%, var(--panel-3)), var(--panel-3)); }
+.slogo img { max-width: 100%; max-height: 100%; object-fit: contain; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
+.slogo .code { font: 800 18px var(--sans); letter-spacing: .04em; color: var(--muted); }
+.sinfo { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 4px 4px 2px 0; }
+.sname { font-weight: 650; font-size: 14.5px; line-height: 1.3; }
+.sdate { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.sfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.sfoot .code { margin-left: auto; font: 700 10.5px var(--mono); padding: 1px 5px; border-radius: 4px; background: var(--panel); border: 1px solid var(--border-2); }
+.hunting { font-size: 11px; font-weight: 650; padding: 1px 7px; border-radius: 5px; background: var(--accent-bg); color: var(--accent); }
+.set-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.set-title img { height: 34px; max-width: 110px; object-fit: contain; }
+.set-title b { font-size: 15px; }
+#cs-search, #cs-gsearch { width: 260px; }
+.cgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; padding: 14px; }
+.ccard { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 7px; border-radius: 10px; cursor: pointer;
+         border: 1px solid var(--border); background: var(--panel-2); text-align: left; color: inherit; font: inherit; min-width: 0; }
+.ccard:hover { border-color: var(--border-2); }
+.ccard.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; background: var(--accent-bg); }
+.ccard.changed::after { content: "unsaved"; position: absolute; top: 12px; left: 12px; font-size: 10px; font-weight: 700; padding: 1px 6px;
+                        border-radius: 4px; background: var(--accent); color: var(--accent-ink); }
+.ccard .art { aspect-ratio: 63 / 88; border-radius: 6px; background: var(--panel-3); overflow: hidden; }
+.ccard .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ccard .nm { font-weight: 600; font-size: 12.5px; line-height: 1.3; overflow: hidden; display: -webkit-box;
+             -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ccard .meta { font-size: 11.5px; color: var(--muted); display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.ccard .meta .rar { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ccard .meta .mk { margin-left: auto; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ccard .var { font-size: 10.5px; color: var(--warn); }
+.ccard .from { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ccard .tick { position: absolute; top: 12px; right: 12px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+               background: rgba(0,0,0,.55); border: 2px solid rgba(255,255,255,.7); color: transparent; }
+.ccard.on .tick { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.ccard .tick svg { width: 14px; height: 14px; }
+.cgrid .empty { grid-column: 1 / -1; }
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 6px; border: 2px solid var(--panel); }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -351,6 +399,24 @@ input::placeholder { color: var(--faint); }
   .rv-main { flex-direction: column; }
   .rv-main figure.ref { flex: 0 0 30%; }
   .ctab .hide-sm { display: none; }
+  #cs-search, #cs-gsearch { width: 100%; }
+  /* on a phone the page scrolls, not the panel, and Save rides along at the bottom */
+  #view-cards .cdb { overflow: visible; }
+  #view-cards .cmode, #view-cards .cdb-body { flex: none; overflow: visible; }
+  #view-cards .savebar { position: sticky; bottom: 0; z-index: 6; flex-wrap: wrap; border-radius: 0 0 var(--radius) var(--radius);
+                         background: color-mix(in srgb, var(--accent) 16%, var(--panel)); box-shadow: 0 -6px 18px rgba(0,0,0,.18); }
+  #view-cards .savebar .hint { display: none; }
+}
+@media (max-width: 600px) {
+  .era { padding: 14px 12px 4px; }
+  .sgrid { grid-template-columns: 1fr; gap: 10px; }
+  .slogo { width: 108px; height: 88px; }
+  .cgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 10px; }
+  .set-title img { display: none; }
+  #cm-set .cdb-row { gap: 8px; }
+  #cm-set .cdb-row .spacer { display: none; }
+  #cs-rarity, #cs-sort { flex: 1 1 40%; min-width: 0; }
+  #cs-count { flex-basis: 100%; }
 }
 </style>
 </head>
@@ -527,38 +593,94 @@ input::placeholder { color: var(--faint); }
     <div class="cdb">
       <div class="cdb-head">
         <div class="cdb-row">
-          <input type="search" id="c-search" placeholder="Search name, number, set, rarity…" autocomplete="off">
-          <div class="filters" id="c-sets"></div>
-          <div class="filters" id="c-status">
-            <button data-status="" class="active">All</button>
-            <button data-status="on">Hunting</button>
-            <button data-status="off">Off</button>
+          <div class="seg" id="c-mode" style="flex:none">
+            <button data-mode="sets" class="active">All sets</button>
+            <button data-mode="mine">My cards <span id="c-mine-n" class="muted"></span></button>
           </div>
-          <span class="spacer"></span>
-          <select id="c-sort" style="width:auto">
-            <option value="set">Set, then number</option>
-            <option value="name">Name</option>
-            <option value="market-desc">Market price, high → low</option>
-            <option value="market-asc">Market price, low → high</option>
-          </select>
-        </div>
-        <div class="cdb-row">
-          <span class="hint" id="c-count"></span>
-          <button class="btn ghost sm" id="c-on">Turn all shown on</button>
-          <button class="btn ghost sm" id="c-off">Turn all shown off</button>
           <span class="spacer"></span>
           <span class="hint" id="c-budget"></span>
         </div>
       </div>
-      <div class="cdb-body">
-        <table class="ctab">
-          <thead><tr>
-            <th title="Unchecked cards are skipped by Card Hunter">Hunt</th><th></th><th>Card</th><th class="num">#</th>
-            <th class="hide-sm">Set</th><th class="hide-sm">Rarity</th><th class="money">Market</th>
-            <th class="money" title="The most Card Hunter will pay, shipping included">Cap</th>
-          </tr></thead>
-          <tbody id="c-rows"></tbody>
-        </table>
+
+      <!-- every era and set -->
+      <div class="cmode" id="cm-sets">
+        <div class="cdb-head">
+          <div class="cdb-row">
+            <input type="search" id="cs-gsearch" placeholder="Search every set: name, number, rarity…" autocomplete="off">
+            <span class="hint" id="cs-summary"></span>
+          </div>
+        </div>
+        <div class="cdb-body" id="cs-sets"></div>
+      </div>
+
+      <!-- one set, or search results across all of them -->
+      <div class="cmode hidden" id="cm-set">
+        <div class="cdb-head">
+          <div class="cdb-row">
+            <button class="btn ghost sm" id="cs-back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 6l-6 6 6 6"/></svg>All sets</button>
+            <div class="set-title" id="cs-title"></div>
+          </div>
+          <div class="cdb-row">
+            <input type="search" id="cs-search" placeholder="Search this set…" autocomplete="off">
+            <select id="cs-rarity" style="width:auto"></select>
+            <div class="filters" id="cs-status">
+              <button data-status="" class="active">All</button>
+              <button data-status="on">Hunting</button>
+              <button data-status="off">Not hunting</button>
+            </div>
+            <label class="check" id="cs-variants-l" title="Poke Ball, Master Ball and other pattern printings, plus staff and stamped promos. Same artwork as the regular card, so Card Hunter can't tell them apart from a photo."><input type="checkbox" id="cs-variants"> <span id="cs-variants-t">Variants</span></label>
+            <span class="spacer"></span>
+            <select id="cs-sort" style="width:auto">
+              <option value="number">Number</option>
+              <option value="market-desc">Market price, high → low</option>
+              <option value="market-asc">Market price, low → high</option>
+              <option value="name">Name</option>
+            </select>
+          </div>
+          <div class="cdb-row">
+            <span class="hint" id="cs-count"></span>
+            <button class="btn ghost sm" id="cs-on">Hunt all shown</button>
+            <button class="btn ghost sm" id="cs-off">Stop all shown</button>
+          </div>
+        </div>
+        <div class="cdb-body"><div class="cgrid" id="cs-cards"></div></div>
+      </div>
+
+      <!-- the cards in cards.json -->
+      <div class="cmode hidden" id="cm-mine">
+        <div class="cdb-head">
+          <div class="cdb-row">
+            <input type="search" id="c-search" placeholder="Search name, number, set, rarity…" autocomplete="off">
+            <div class="filters" id="c-sets"></div>
+            <div class="filters" id="c-status">
+              <button data-status="" class="active">All</button>
+              <button data-status="on">Hunting</button>
+              <button data-status="off">Off</button>
+            </div>
+            <span class="spacer"></span>
+            <select id="c-sort" style="width:auto">
+              <option value="set">Set, then number</option>
+              <option value="name">Name</option>
+              <option value="market-desc">Market price, high → low</option>
+              <option value="market-asc">Market price, low → high</option>
+            </select>
+          </div>
+          <div class="cdb-row">
+            <span class="hint" id="c-count"></span>
+            <button class="btn ghost sm" id="c-on">Turn all shown on</button>
+            <button class="btn ghost sm" id="c-off">Turn all shown off</button>
+          </div>
+        </div>
+        <div class="cdb-body">
+          <table class="ctab">
+            <thead><tr>
+              <th title="Unchecked cards are skipped by Card Hunter">Hunt</th><th></th><th>Card</th><th class="num">#</th>
+              <th class="hide-sm">Set</th><th class="hide-sm">Rarity</th><th class="money">Market</th>
+              <th class="money" title="The most Card Hunter will pay, shipping included">Cap</th>
+            </tr></thead>
+            <tbody id="c-rows"></tbody>
+          </table>
+        </div>
       </div>
       <div class="savebar hidden" id="c-savebar">
         <span><b id="c-pending"></b></span>
