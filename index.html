@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src https: data: blob:; connect-src https://api.github.com 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>PokeSniper</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23f5c542'/%3E%3Cpath d='M2 16h28' stroke='%23111' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #0e1014; --panel: #161920; --panel-2: #1c2029; --panel-3: #232833;
+  --border: #2a303c; --border-2: #363d4b;
+  --text: #e7e9ee; --muted: #8e96a6; --faint: #5d6575;
+  --accent: #f5c542; --accent-ink: #1a1400;
+  --blue: #60a5fa; --good: #34d399; --warn: #fbbf24; --bad: #f87171; --hit: #fde68a;
+  --good-bg: rgba(52,211,153,.12); --warn-bg: rgba(251,191,36,.12); --bad-bg: rgba(248,113,113,.12);
+  --blue-bg: rgba(96,165,250,.12); --accent-bg: rgba(245,197,66,.12);
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --radius: 10px;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f3f4f7; --panel: #ffffff; --panel-2: #f7f8fa; --panel-3: #eceef2;
+    --border: #e1e4ea; --border-2: #cfd4dc;
+    --text: #161a22; --muted: #5d6573; --faint: #9aa1ad;
+    --accent: #e0a800; --accent-ink: #1a1400;
+    --blue: #2563eb; --good: #059669; --warn: #b45309; --bad: #dc2626; --hit: #92400e;
+    --good-bg: rgba(5,150,105,.1); --warn-bg: rgba(217,119,6,.1); --bad-bg: rgba(220,38,38,.08);
+    --blue-bg: rgba(37,99,235,.08); --accent-bg: rgba(224,168,0,.14);
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f3f4f7; --panel: #ffffff; --panel-2: #f7f8fa; --panel-3: #eceef2;
+  --border: #e1e4ea; --border-2: #cfd4dc;
+  --text: #161a22; --muted: #5d6573; --faint: #9aa1ad;
+  --accent: #e0a800; --accent-ink: #1a1400;
+  --blue: #2563eb; --good: #059669; --warn: #b45309; --bad: #dc2626; --hit: #92400e;
+  --good-bg: rgba(5,150,105,.1); --warn-bg: rgba(217,119,6,.1); --bad-bg: rgba(220,38,38,.08);
+  --blue-bg: rgba(37,99,235,.08); --accent-bg: rgba(224,168,0,.14);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans);
+       display: flex; flex-direction: column; overflow: hidden; }
+button, input, select { font: inherit; color: inherit; }
+a { color: var(--blue); }
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); }
+.good-t { color: var(--good); } .bad-t { color: var(--bad); } .warn-t { color: var(--warn); }
+
+/* ---------- header ---------- */
+header { display: flex; align-items: center; gap: 16px; padding: 10px 18px;
+         background: var(--panel); border-bottom: 1px solid var(--border); flex: none; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 15px; white-space: nowrap; }
+.brand svg { width: 24px; height: 24px; }
+nav { display: flex; gap: 2px; background: var(--panel-2); padding: 3px; border-radius: 9px; border: 1px solid var(--border);
+      overflow-x: auto; scrollbar-width: none; }
+nav button { border: 0; background: none; padding: 5px 14px; border-radius: 7px; cursor: pointer; color: var(--muted);
+             font-weight: 550; white-space: nowrap; }
+nav button:hover { color: var(--text); }
+nav button.active { background: var(--panel-3); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+nav .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 5px; border-radius: 9px;
+             background: var(--accent); color: var(--accent-ink); font-size: 11px; line-height: 17px; text-align: center; }
+.spacer { flex: 1; }
+
+.quota { display: flex; align-items: center; gap: 12px; padding: 5px 12px; border: 1px solid var(--border);
+         border-radius: 9px; background: var(--panel-2); min-width: 250px; }
+.quota .q-main { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.quota .q-top { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.q-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.q-num { font-weight: 700; font-variant-numeric: tabular-nums; }
+.quota .q-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meter { height: 4px; background: var(--panel-3); border-radius: 3px; overflow: hidden; }
+.meter > div { height: 100%; background: var(--good); border-radius: 3px; transition: width .4s; }
+.meter.mid > div { background: var(--warn); }
+.meter.low > div { background: var(--bad); }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--border-2);
+       background: var(--panel-3); padding: 6px 12px; border-radius: 8px; cursor: pointer; font-weight: 550; white-space: nowrap;
+       text-decoration: none; color: var(--text); }
+.btn:hover:not(:disabled) { border-color: var(--faint); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.07); }
+.btn.danger { color: var(--bad); }
+.btn.ghost { background: none; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover:not(:disabled) { color: var(--text); background: var(--panel-3); }
+.btn.sm { padding: 3px 9px; font-size: 12.5px; border-radius: 7px; }
+.btn.icon { padding: 6px; }
+.btn svg { width: 15px; height: 15px; flex: none; }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- views ---------- */
+main { flex: 1; min-height: 0; display: flex; }
+.view { flex: 1; min-width: 0; display: flex; gap: 14px; padding: 14px; min-height: 0; }
+
+.tools { width: 400px; flex: none; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 2px; }
+.tool { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+.tool-head { display: flex; align-items: flex-start; gap: 11px; }
+.tool-icon { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+.tool-icon svg { width: 19px; height: 19px; }
+.tool h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.tool p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+.tool-body { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.tool-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.tool-foot .cost { font-size: 12px; color: var(--muted); }
+.tool-foot .btn.primary { margin-left: auto; min-width: 88px; }
+.notice { font-size: 12.5px; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); }
+.notice.bad { background: var(--bad-bg); color: var(--bad); }
+.notice.good { background: var(--good-bg); color: var(--good); }
+.notice.info { background: var(--blue-bg); color: var(--blue); }
+details.opts > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); font-weight: 600; list-style: none; }
+details.opts > summary::before { content: "▸ "; }
+details.opts[open] > summary::before { content: "▾ "; }
+details.opts > div { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > label, .field-label { font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.row { display: flex; gap: 10px; }
+.row > * { flex: 1; min-width: 0; }
+input[type=text], input[type=number], input[type=search], input[type=password], select {
+  width: 100%; background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 7px; padding: 6px 9px; outline: none; }
+input:focus, select:focus { border-color: var(--blue); }
+input::placeholder { color: var(--faint); }
+.checks { display: flex; gap: 14px; flex-wrap: wrap; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; color: var(--muted); }
+.check:hover { color: var(--text); }
+.check input { accent-color: var(--accent); margin: 0; }
+.suffix { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
+.suffix input[type=checkbox] { accent-color: var(--accent); margin: 0; flex: none; }
+.seg { display: flex; background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px; padding: 2px; gap: 2px; flex-wrap: wrap; }
+.seg button { flex: 1; border: 0; background: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.seg button.active { background: var(--panel-3); color: var(--text); font-weight: 600; }
+.hint { font-size: 12px; color: var(--muted); }
+
+.picker { position: relative; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 9px; border-radius: 12px; font-size: 12px;
+        background: var(--blue-bg); color: var(--blue); }
+.chip button { border: 0; background: none; cursor: pointer; color: inherit; padding: 0 4px; font-size: 14px; line-height: 1; opacity: .7; }
+.suggest { position: absolute; left: 0; right: 0; top: 100%; margin-top: 3px; z-index: 20; max-height: 250px; overflow-y: auto;
+           background: var(--panel); border: 1px solid var(--border-2); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.suggest div { padding: 6px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
+.suggest div small { color: var(--muted); }
+.suggest div.on, .suggest div:hover { background: var(--panel-3); }
+
+/* run console */
+.console { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel);
+           border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.console-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.jobs { display: flex; gap: 5px; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: thin; }
+.job-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 7px; border: 1px solid transparent;
+            background: none; cursor: pointer; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.job-pill:hover { color: var(--text); background: var(--panel-2); }
+.job-pill.active { color: var(--text); background: var(--panel-3); border-color: var(--border-2); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
+.dot.run { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); animation: pulse 1.4s ease-in-out infinite; }
+.dot.ok { background: var(--good); } .dot.fail { background: var(--bad); } .dot.stop { background: var(--warn); }
+@keyframes pulse { 50% { opacity: .45; } }
+.console-status { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border);
+                  background: var(--panel-2); font-size: 13px; min-height: 46px; flex-wrap: wrap; }
+.console-status .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.console-status .meter { width: 160px; flex: none; }
+.console-status .actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.steps { flex: 1; overflow: auto; padding: 10px 0 14px; }
+.step { display: flex; align-items: center; gap: 12px; padding: 7px 16px; font-size: 13.5px; }
+.step .ico { width: 18px; height: 18px; display: grid; place-items: center; flex: none; }
+.step .ico svg { width: 16px; height: 16px; }
+.step .nm { flex: 1; min-width: 0; }
+.step .tm { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.step.pending .nm { color: var(--faint); }
+.step.active { background: var(--accent-bg); }
+.step.active .nm { font-weight: 600; }
+.step.failed .nm { color: var(--bad); }
+.run-sum { margin: 10px 16px 0; padding: 12px 14px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border);
+           display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.empty { flex: 1; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 30px; }
+.empty svg { width: 42px; height: 42px; opacity: .35; margin-bottom: 8px; }
+
+/* results */
+.rlist { width: 330px; flex: none; display: flex; flex-direction: column; background: var(--panel);
+         border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.rlist-head { padding: 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.filters { display: flex; gap: 4px; flex-wrap: wrap; }
+.filters button { border: 1px solid var(--border-2); background: none; padding: 3px 10px; border-radius: 14px; cursor: pointer;
+                  font-size: 12px; color: var(--muted); white-space: nowrap; }
+.filters button.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+.filters button .n { opacity: .7; margin-left: 3px; }
+.rlist-body { flex: 1; overflow-y: auto; }
+.rdate { padding: 10px 14px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 650; }
+.ritem { padding: 9px 14px; cursor: pointer; border-left: 3px solid transparent; display: flex; flex-direction: column; gap: 4px; }
+.ritem:hover { background: var(--panel-2); }
+.ritem.active { background: var(--panel-3); border-left-color: var(--accent); }
+.ritem .r1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ritem .r2 { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge { display: inline-block; font-size: 11px; font-weight: 650; padding: 1px 7px; border-radius: 5px; white-space: nowrap; }
+.badge.cards { background: var(--blue-bg); color: var(--blue); }
+.badge.quiet { background: var(--panel-3); color: var(--muted); }
+.badge.deal { background: var(--good-bg); color: var(--good); }
+.badge.stamped { background: var(--bad-bg); color: var(--bad); }
+.badge.fail { background: var(--bad); color: #fff; }
+.viewer { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel);
+          border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.viewer-head { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.viewer-head .title { font-weight: 650; font-size: 15px; }
+.viewer-head .sub { font-size: 12.5px; color: var(--muted); }
+.vh-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.vh-row input[type=search] { width: 220px; }
+.vh-row select { width: auto; }
+.lgrid { flex: 1; overflow-y: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+         grid-auto-rows: max-content; gap: 10px; align-content: start; }
+.lcard { background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; display: flex;
+         flex-direction: column; cursor: pointer; }
+.lcard:hover { border-color: var(--border-2); }
+.lcard.stamped { border-color: color-mix(in srgb, var(--bad) 60%, var(--border)); }
+.lcard .ph { aspect-ratio: 1 / 1; background: var(--panel-3); display: grid; place-items: center; overflow: hidden; }
+.lcard .ph img { width: 100%; height: 100%; object-fit: contain; }
+.lcard .bd { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.lcard .cd { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lcard .tt { font-size: 12.5px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.lcard .pr { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.lcard .pr b { font-size: 16px; }
+.lcard .pr small { color: var(--muted); font-size: 11.5px; }
+.mk { font-size: 12px; color: var(--muted); }
+.mk.deal { color: var(--good); font-weight: 700; } .mk.good { color: var(--good); } .mk.over { color: var(--bad); }
+.lcard .ft { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.sbadge { font-size: 11px; font-weight: 650; padding: 1px 7px; border-radius: 10px; color: #fff; white-space: nowrap; }
+.sbadge.strong { background: #1a7f37; } .sbadge.ok { background: #bc4c00; } .sbadge.stamp { background: #cf222e; }
+.sbadge.plain { background: var(--panel-3); color: var(--muted); }
+
+/* panels (schedule, settings) */
+.panel-wrap { flex: 1; overflow-y: auto; display: flex; justify-content: center; }
+.panel { width: min(760px, 100%); display: flex; flex-direction: column; gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; display: flex;
+        flex-direction: column; gap: 12px; }
+.card h2 { margin: 0; font-size: 16px; }
+.card h2 + p { margin: -6px 0 0; color: var(--muted); font-size: 13px; }
+.times { display: flex; flex-wrap: wrap; gap: 6px; }
+.times span { background: var(--panel-3); border-radius: 6px; padding: 2px 8px; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.budget { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.bstat { background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; display: flex;
+         flex-direction: column; gap: 5px; }
+.bstat .v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.bstat .v small { font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.save-row { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+
+/* cards */
+.cdb { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel);
+       border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.cdb-head { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.cdb-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#c-search { width: 280px; }
+.cdb-body { flex: 1; overflow: auto; }
+.ctab { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ctab th { position: sticky; top: 0; z-index: 2; background: var(--panel-2); text-align: left; font-size: 11px; font-weight: 600;
+           text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.ctab td { padding: 4px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.ctab .num, .ctab .money { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ctab input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; margin: 0; }
+.ctab tr.off td:not(:first-child) { opacity: .45; }
+.ctab tr.changed td:first-child { box-shadow: inset 3px 0 var(--accent); }
+.ctab tr.grp td { background: var(--panel-2); font-weight: 650; font-size: 12.5px; padding-top: 8px; padding-bottom: 8px; }
+.ctab tr.grp .hint { font-weight: 400; margin-left: 8px; }
+.ctab .thumb { width: 34px; height: 47px; object-fit: cover; border-radius: 3px; display: block; background: var(--panel-3);
+               transition: transform .12s; transform-origin: left center; position: relative; }
+.ctab .thumb:hover { transform: scale(4.2); z-index: 5; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+.ctab .sub { font-size: 11.5px; color: var(--faint); }
+.ctab a { color: var(--blue); text-decoration: none; white-space: nowrap; }
+.tag { font-size: 10.5px; padding: 0 5px; border-radius: 4px; background: var(--panel-3); color: var(--muted); margin-left: 4px; font-weight: 600; }
+.tag.warn { background: var(--warn-bg); color: var(--warn); }
+.savebar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--accent-bg); border-top: 1px solid var(--border); }
+.savebar b { color: var(--hit); }
+
+/* review mode */
+.rv { position: fixed; inset: 0; z-index: 90; background: #05060a; display: flex; flex-direction: column; color: #e7e9ee; }
+.rv-top { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+.rv-top .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.rv-main { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 0 14px; }
+.rv-main figure { margin: 0; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.rv-main figure.ref { flex: 0 0 34%; }
+.rv-main figcaption { font-size: 12px; color: #8e96a6; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.rv-main .imgbox { flex: 1; min-height: 0; position: relative; background: #0e1014; border-radius: 10px; overflow: hidden; }
+.rv-main img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.rv-info { padding: 12px 14px 16px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 13.5px; }
+.rv-info .pr b { font-size: 20px; }
+.rv .btn { background: #232833; border-color: #363d4b; color: #e7e9ee; }
+.rv .btn.primary { background: #f5c542; border-color: #f5c542; color: #1a1400; }
+
+/* sign-in */
+.signin { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: var(--bg); padding: 16px; overflow-y: auto; }
+.signin-box { width: min(460px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 24px;
+              display: flex; flex-direction: column; gap: 14px; }
+.signin-box h1 { margin: 0; font-size: 20px; }
+.signin-box p { margin: 0; color: var(--muted); font-size: 13.5px; }
+.signin-box ol { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.signin-box details summary { cursor: pointer; color: var(--blue); font-size: 13px; }
+
+/* changelog + toasts */
+.ver { border: 1px solid var(--border-2); background: var(--panel-2); color: var(--muted); font: 600 11.5px var(--mono);
+       padding: 2px 7px; border-radius: 6px; cursor: pointer; }
+.ver:hover { color: var(--text); border-color: var(--faint); }
+.modal { position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,.5); display: grid; place-items: center; padding: 16px; }
+.modal-box { width: min(680px, 100%); max-height: min(80vh, 900px); display: flex; flex-direction: column; background: var(--panel);
+             border: 1px solid var(--border-2); border-radius: var(--radius); box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+.modal-head { display: flex; align-items: center; gap: 10px; padding: 12px 12px 12px 18px; border-bottom: 1px solid var(--border); }
+.modal-head h2 { margin: 0; font-size: 16px; }
+.modal-body { overflow-y: auto; padding: 6px 18px 18px; }
+.rel { padding: 14px 0; border-bottom: 1px solid var(--border); }
+.rel:last-child { border-bottom: 0; }
+.rel-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.rel-v { font: 650 13px var(--mono); }
+.rel-t { font-weight: 600; }
+.rel-d { font-size: 12px; color: var(--muted); margin-left: auto; }
+.rel ul { margin: 7px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 95; }
+.toast { background: var(--panel-3); border: 1px solid var(--border-2); border-left: 3px solid var(--blue); padding: 10px 14px;
+         border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); max-width: 380px; font-size: 13px; animation: rise .2s ease-out; }
+.toast.good { border-left-color: var(--good); } .toast.bad { border-left-color: var(--bad); } .toast.warn { border-left-color: var(--warn); }
+.toast b { display: block; margin-bottom: 2px; }
+@keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 6px; border: 2px solid var(--panel); }
+::-webkit-scrollbar-track { background: transparent; }
+
+@media (max-width: 1100px) {
+  .quota { min-width: 0; }
+  .quota .q-sub { display: none; }
+}
+@media (max-width: 900px) {
+  body { overflow: auto; }
+  header { flex-wrap: wrap; gap: 10px; padding: 10px 16px; }
+  nav { order: 5; width: 100%; }
+  .quota { order: 3; }
+  .view { flex-direction: column; padding: 12px 16px; }
+  .tools, .rlist { width: auto; }
+  .rlist { max-height: 40vh; }
+  .console, .viewer, .cdb { min-height: 75vh; }
+  .budget { grid-template-columns: 1fr; }
+  #c-search, .vh-row input[type=search] { width: 100%; }
+  .lgrid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); padding: 10px; }
+  .rv-main { flex-direction: column; }
+  .rv-main figure.ref { flex: 0 0 30%; }
+  .ctab .hide-sm { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- ================= SIGN IN ================= -->
+<div class="signin hidden" id="signin">
+  <div class="signin-box">
+    <div class="brand">
+      <svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="var(--accent)"/><path d="M2 16h28" stroke="var(--bg)" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="var(--text)" stroke="var(--bg)" stroke-width="3"/></svg>
+      PokeSniper
+    </div>
+    <h1>Sign in</h1>
+    <p>Paste your GitHub access token. It stays in this browser only; the page talks straight to GitHub with it.</p>
+    <div class="field"><label for="si-token">Access token</label>
+      <input type="password" id="si-token" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></div>
+    <div class="field"><label for="si-repo">Private repo</label>
+      <input type="text" id="si-repo" spellcheck="false" value="giraffeo182/PokeSniper"></div>
+    <div class="notice bad hidden" id="si-error"></div>
+    <button class="btn primary" id="si-go">Sign in</button>
+    <details>
+      <summary>How to make a token</summary>
+      <ol>
+        <li>GitHub → Settings → Developer settings → Personal access tokens → <b>Fine-grained tokens</b> → Generate new token.</li>
+        <li>Repository access: <b>Only select repositories</b> → your PokeSniper repo.</li>
+        <li>Repository permissions: <b>Actions</b>, <b>Contents</b> and <b>Workflows</b> → Read and write.</li>
+        <li>Generate, copy, paste above. GitHub only shows it once.</li>
+      </ol>
+    </details>
+  </div>
+</div>
+
+<!-- ================= APP ================= -->
+<header class="hidden" id="hdr">
+  <div class="brand">
+    <svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="var(--accent)"/><path d="M2 16h28" stroke="var(--bg)" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="var(--text)" stroke="var(--bg)" stroke-width="3"/></svg>
+    PokeSniper
+    <button class="ver hidden" id="ver" title="What's new">v?</button>
+  </div>
+  <nav id="nav">
+    <button data-view="run" class="active">Run<span class="count hidden" id="nav-running"></span></button>
+    <button data-view="results">Results</button>
+    <button data-view="cards">Cards</button>
+    <button data-view="schedule">Schedule</button>
+    <button data-view="settings">Settings</button>
+  </nav>
+  <div class="spacer"></div>
+  <div class="quota" id="quota" title="eBay Browse API calls left today, as of the last run">
+    <div class="q-main">
+      <div class="q-top"><span class="q-label">eBay API</span><span class="q-num" id="q-num">—</span><span class="muted" id="q-of">/ 5,000 left</span></div>
+      <div class="meter" id="q-meter"><div style="width:0"></div></div>
+      <div class="q-sub" id="q-sub">No runs published yet</div>
+    </div>
+  </div>
+  <button class="btn ghost icon" id="theme-btn" title="Toggle light / dark">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<main class="hidden" id="app">
+  <!-- ================= RUN ================= -->
+  <section class="view" id="view-run">
+    <div class="tools">
+      <div class="tool">
+        <div class="tool-head">
+          <div class="tool-icon" style="background:var(--accent-bg);color:var(--accent)">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l12.5-7.5z"/></svg>
+          </div>
+          <div><h3>Run now</h3><p>Starts a run on GitHub right away. About 5–10 minutes.</p></div>
+        </div>
+        <div class="tool-body">
+          <div class="checks">
+            <label class="check"><input type="checkbox" id="rn-etb" checked> ETB Scanner</label>
+            <label class="check"><input type="checkbox" id="rn-hunter" checked> Card Hunter</label>
+            <label class="check"><input type="checkbox" id="rn-email" checked> Email results</label>
+          </div>
+          <details class="opts" id="rn-opts">
+            <summary>Card Hunter options for this run</summary>
+            <div>
+              <div class="field picker">
+                <label for="rn-card-input">Cards</label>
+                <input type="text" id="rn-card-input" autocomplete="off" placeholder="All cards switched on — type to pick specific ones">
+                <div class="suggest hidden" id="rn-suggest"></div>
+                <div class="chips" id="rn-chips"></div>
+              </div>
+              <div class="field"><span class="field-label">Listing type</span>
+                <div class="seg" id="rn-type">
+                  <button data-v="" class="active">Usual</button><button data-v="both">Both</button>
+                  <button data-v="buy-now">Buy It Now</button><button data-v="auction">Auctions</button>
+                </div>
+              </div>
+              <div class="row">
+                <div class="field"><label for="rn-hours">Auctions ending within</label>
+                  <div class="suffix"><input type="number" id="rn-hours" min="0" step="1" placeholder="usual"> hrs</div></div>
+                <div class="field"><label for="rn-new">Newly listed only</label>
+                  <div class="suffix"><input type="number" id="rn-new" min="1" step="1" placeholder="off"> hrs</div></div>
+              </div>
+              <div class="row">
+                <div class="field"><label for="rn-pct">Price cap, % of market</label>
+                  <div class="suffix"><input type="number" id="rn-pct" min="1" max="500" step="5" placeholder="usual"> %</div></div>
+                <div class="field"><span class="field-label">&nbsp;</span>
+                  <label class="check" title="Ignores the seen list: everything that matches is reported again"><input type="checkbox" id="rn-all"> Re-check seen</label></div>
+              </div>
+              <div class="hint">Blank means the usual options from the Settings tab.</div>
+            </div>
+          </details>
+        </div>
+        <div class="tool-foot">
+          <span class="cost" id="rn-cost"></span>
+          <button class="btn primary" id="rn-go">Run now</button>
+        </div>
+      </div>
+
+      <div class="tool">
+        <div class="tool-head">
+          <div class="tool-icon" style="background:var(--blue-bg);color:var(--blue)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+          </div>
+          <div><h3>Schedule</h3><p id="nx-summary">Loading…</p></div>
+        </div>
+        <div class="tool-body">
+          <div class="hint" id="nx-next"></div>
+          <div><button class="btn sm" data-goto="schedule">Change schedule</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="console">
+      <div class="console-head">
+        <div class="jobs" id="runs-pills"></div>
+        <button class="btn ghost sm" id="runs-refresh" title="Check GitHub for new runs">Refresh</button>
+      </div>
+      <div class="console-status" id="run-status"></div>
+      <div class="steps" id="run-steps">
+        <div class="empty"><div>No runs yet.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= RESULTS ================= -->
+  <section class="view hidden" id="view-results">
+    <div class="rlist">
+      <div class="rlist-head">
+        <div class="filters" id="rl-filters">
+          <button data-f="" class="active">All runs</button>
+          <button data-f="finds">With finds</button>
+          <button data-f="stamped">Stamped</button>
+        </div>
+      </div>
+      <div class="rlist-body" id="rl-body"></div>
+    </div>
+    <div class="viewer">
+      <div class="viewer-head">
+        <div class="title" id="rv-title">Results</div>
+        <div class="sub" id="rv-sub"></div>
+        <div class="vh-row">
+          <div class="filters" id="rv-filters"></div>
+          <span class="spacer"></span>
+          <input type="search" id="rv-search" placeholder="Search card or title…" autocomplete="off">
+          <select id="rv-sort">
+            <option value="deal">Best deal first</option>
+            <option value="price">Cheapest first</option>
+            <option value="score">Best art match first</option>
+            <option value="ending">Auctions ending soonest</option>
+          </select>
+        </div>
+      </div>
+      <div class="lgrid" id="rv-grid"></div>
+    </div>
+  </section>
+
+  <!-- ================= CARDS ================= -->
+  <section class="view hidden" id="view-cards">
+    <div class="cdb">
+      <div class="cdb-head">
+        <div class="cdb-row">
+          <input type="search" id="c-search" placeholder="Search name, number, set, rarity…" autocomplete="off">
+          <div class="filters" id="c-sets"></div>
+          <div class="filters" id="c-status">
+            <button data-status="" class="active">All</button>
+            <button data-status="on">Hunting</button>
+            <button data-status="off">Off</button>
+          </div>
+          <span class="spacer"></span>
+          <select id="c-sort" style="width:auto">
+            <option value="set">Set, then number</option>
+            <option value="name">Name</option>
+            <option value="market-desc">Market price, high → low</option>
+            <option value="market-asc">Market price, low → high</option>
+          </select>
+        </div>
+        <div class="cdb-row">
+          <span class="hint" id="c-count"></span>
+          <button class="btn ghost sm" id="c-on">Turn all shown on</button>
+          <button class="btn ghost sm" id="c-off">Turn all shown off</button>
+          <span class="spacer"></span>
+          <span class="hint" id="c-budget"></span>
+        </div>
+      </div>
+      <div class="cdb-body">
+        <table class="ctab">
+          <thead><tr>
+            <th title="Unchecked cards are skipped by Card Hunter">Hunt</th><th></th><th>Card</th><th class="num">#</th>
+            <th class="hide-sm">Set</th><th class="hide-sm">Rarity</th><th class="money">Market</th>
+            <th class="money" title="The most Card Hunter will pay, shipping included">Cap</th>
+          </tr></thead>
+          <tbody id="c-rows"></tbody>
+        </table>
+      </div>
+      <div class="savebar hidden" id="c-savebar">
+        <span><b id="c-pending"></b></span>
+        <span class="hint">Saved to GitHub when you press Save; the next run uses them.</span>
+        <span class="spacer"></span>
+        <button class="btn sm" id="c-discard">Discard</button>
+        <button class="btn primary sm" id="c-save">Save</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= SCHEDULE ================= -->
+  <section class="view hidden" id="view-schedule">
+    <div class="panel-wrap"><div class="panel">
+      <div class="card">
+        <h2>When runs happen</h2>
+        <p>Times are your time. GitHub often starts scheduled runs 5–20 minutes late, and on very busy days skips one.</p>
+        <div class="field"><span class="field-label">How often</span>
+          <div class="seg" id="sc-every">
+            <button data-v="0">Paused</button><button data-v="2">Every 2h</button><button data-v="3">3h</button>
+            <button data-v="4">4h</button><button data-v="6">6h</button><button data-v="8">8h</button>
+            <button data-v="12">12h</button><button data-v="24">Once a day</button>
+          </div>
+        </div>
+        <div class="row" id="sc-start-row">
+          <div class="field"><label for="sc-start" id="sc-start-label">First run of the day</label>
+            <select id="sc-start"></select></div>
+          <div class="field"></div>
+        </div>
+        <div class="field"><span class="field-label">Runs at</span><div class="times" id="sc-times"></div></div>
+        <div class="notice info hidden" id="sc-custom"></div>
+      </div>
+      <div class="card">
+        <h2>What it costs</h2>
+        <p>Both limits reset on their own: eBay's every day at 3 AM Eastern, GitHub's every month.</p>
+        <div class="budget">
+          <div class="bstat"><span class="q-label">eBay calls a day</span><span class="v" id="sc-calls"></span>
+            <div class="meter" id="sc-calls-m"><div></div></div><span class="hint" id="sc-calls-h"></span></div>
+          <div class="bstat"><span class="q-label">GitHub minutes a month</span><span class="v" id="sc-mins"></span>
+            <div class="meter" id="sc-mins-m"><div></div></div><span class="hint" id="sc-mins-h"></span></div>
+        </div>
+        <div class="hint" id="sc-window"></div>
+      </div>
+      <div class="save-row">
+        <span class="hint" id="sc-state"></span>
+        <button class="btn primary" id="sc-save" disabled>Save schedule</button>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= SETTINGS ================= -->
+  <section class="view hidden" id="view-settings">
+    <div class="panel-wrap"><div class="panel">
+      <div class="card">
+        <h2>Card Hunter, scheduled runs</h2>
+        <p>What every automatic run searches for. A manual run can override these for itself.</p>
+        <div class="field"><span class="field-label">Listing type</span>
+          <div class="seg" id="st-type">
+            <button data-v="both">Buy It Now + auctions</button><button data-v="buy-now">Buy It Now only</button><button data-v="auction">Auctions only</button>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field"><label for="st-hours">Auctions ending within</label>
+            <div class="suffix"><input type="number" id="st-hours" min="1" step="1"> hrs</div>
+            <span class="hint">Kept just over the gap between runs, so none close unseen. Changing the schedule updates it.</span></div>
+          <div class="field"><label for="st-pct">Price cap, % of market</label>
+            <div class="suffix"><input type="number" id="st-pct" min="1" max="500" step="5" placeholder="100"> %</div>
+            <span class="hint">80 = only listings at 80% of market or less, shipping included.</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Listings</h2>
+        <div class="row">
+          <div class="field"><label for="st-zip">Ship to ZIP</label><input type="text" id="st-zip" inputmode="numeric" maxlength="5">
+            <span class="hint">Lets eBay price calculated shipping.</span></div>
+          <div class="field"></div>
+        </div>
+        <div class="field"><span class="field-label">Languages</span>
+          <div class="checks" id="st-langs"></div>
+          <span class="hint">Unticked languages are dropped by their title ("Japanese", "JPN"…).</span></div>
+      </div>
+      <div class="save-row">
+        <span class="hint" id="st-state"></span>
+        <button class="btn primary" id="st-save" disabled>Save settings</button>
+      </div>
+      <div class="card">
+        <h2>Account</h2>
+        <div class="hint" id="st-account"></div>
+        <div><button class="btn danger sm" id="st-signout">Sign out on this device</button></div>
+      </div>
+    </div></div>
+  </section>
+</main>
+
+<!-- review mode -->
+<div class="rv hidden" id="rv">
+  <div class="rv-top">
+    <span class="muted" id="rv-count"></span>
+    <span class="title" id="rv-ttl"></span>
+    <button class="btn sm" id="rv-prev" title="Previous (←)">‹</button>
+    <button class="btn sm" id="rv-next" title="Next (→)">›</button>
+    <button class="btn sm" id="rv-close" title="Close (Esc)">✕</button>
+  </div>
+  <div class="rv-main">
+    <figure><figcaption>Listing photo</figcaption><div class="imgbox"><img id="rv-photo" alt=""></div></figure>
+    <figure class="ref" id="rv-ref-fig"><figcaption>Your card</figcaption><div class="imgbox"><img id="rv-ref" alt=""></div></figure>
+  </div>
+  <div class="rv-info" id="rv-info"></div>
+</div>
+
+<div class="modal hidden" id="cl">
+  <div class="modal-box">
+    <div class="modal-head"><h2>What's new</h2><span class="spacer"></span><button class="btn ghost sm" id="cl-close">Close</button></div>
+    <div class="modal-body" id="cl-body"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>

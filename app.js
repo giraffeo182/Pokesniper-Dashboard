@@ -1,0 +1,1178 @@
+/* PokeSniper web dashboard.
+ *
+ * A static page: everything goes straight from this browser to GitHub's API
+ * with the access token you sign in with. Nothing else is involved.
+ *   - Run: starts the scan workflow, shows its steps live, lists past runs
+ *   - Results: what each run found, read from the private repo's `results`
+ *     branch (written by publish_results.py after every run)
+ *   - Cards / Settings / Schedule: edit cards.json, settings.json and the
+ *     workflow's schedule, each saved as a commit on `main`
+ */
+"use strict";
+
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const safeUrl = u => /^https:\/\//i.test(u || "") ? u : "#";
+const num = v => (v == null || v === "" || isNaN(+v)) ? null : +v;
+const money = v => v == null ? "—" : "$" + Number(v).toFixed(2);
+const plural = (n, w, ws = w + "s") => `${n.toLocaleString()} ${n === 1 ? w : ws}`;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("ps_" + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem("ps_" + k, JSON.stringify(v)); } catch (e) {} },
+  del(k) { try { localStorage.removeItem("ps_" + k); } catch (e) {} },
+};
+
+const API = "https://api.github.com";
+const WORKFLOW = "scan.yml";
+const WORKFLOW_PATH = ".github/workflows/" + WORKFLOW;
+const EBAY_DAILY = 5000;
+const ACTIONS_MONTHLY = 2000;        // free plan, private repo
+const ETB_CALLS = 28;                // 27 promos + token
+const LANGS = ["japanese", "korean", "chinese", "thai", "indonesian"];
+const DEMO = new URLSearchParams(location.search).has("demo");
+
+const S = {
+  token: "", repo: "",
+  cfg: null, cfgSha: null,           // cards.json
+  prices: {cards: {}},
+  settings: {}, settingsSha: null,
+  yml: "", ymlSha: null,
+  changelog: null,
+  refs: new Set(),                   // card keys with reference art in references/
+  actions: [],                       // workflow runs, newest first
+  selectedRun: null, jobs: {},       // run id -> jobs API answer
+  results: null,                     // runs.json from the results branch (null = none yet)
+  runData: new Map(),                // results run id -> {hits, etb}
+  view: "run",
+};
+
+/* ------------------------------------------------------------------ helpers */
+function toast(title, msg = "", kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.innerHTML = `<b>${esc(title)}</b>${esc(msg)}`;
+  $("#toasts").appendChild(el);
+  setTimeout(() => el.remove(), kind === "bad" ? 9000 : 5000);
+}
+function patch(el, html) { if (el && el._html !== html) { el.innerHTML = html; el._html = html; } }
+function fmtClock(d) { return d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}); }
+function fmtDay(d) {
+  const today = new Date(), y = new Date(Date.now() - 864e5);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"});
+}
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + "s";
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m < 60 ? `${m}m ${String(s).padStart(2, "0")}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+function fmtIn(ms) {
+  const m = Math.round(ms / 60000);
+  if (m < 1) return "any minute";
+  if (m < 60) return `in ${m} min`;
+  return `in ${Math.floor(m / 60)}h ${m % 60}m`;
+}
+function meter(el, frac, invert) {
+  const f = Math.max(0, Math.min(1, frac));
+  el.firstElementChild.style.width = (f * 100).toFixed(1) + "%";
+  const bad = invert ? f > 0.9 : f < 0.1, mid = invert ? f > 0.7 : f < 0.3;
+  el.classList.toggle("low", bad); el.classList.toggle("mid", !bad && mid);
+}
+
+/* ------------------------------------------------------------------ GitHub API */
+function b64decode(b64) {
+  const bin = atob(b64.replace(/\s/g, ""));
+  return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+}
+function b64encode(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+class GhError extends Error { constructor(msg, status) { super(msg); this.status = status; } }
+
+async function gh(path, {method = "GET", body, raw = false} = {}) {
+  if (DEMO) return window.PS_DEMO.handle(path, {method, body, raw});
+  let res;
+  try {
+    res = await fetch(API + path, {
+      method, cache: "no-store",
+      headers: {
+        Authorization: `Bearer ${S.token}`,
+        Accept: raw ? "application/vnd.github.raw+json" : "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(body ? {"Content-Type": "application/json"} : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    throw new GhError("Couldn't reach GitHub. Check your connection.", 0);
+  }
+  if (res.status === 401) { signOut("GitHub didn't accept the token (expired or revoked?). Sign in with a new one."); throw new GhError("Signed out", 401); }
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).message || msg; } catch (e) {}
+    if (res.status === 403 && /Resource not accessible/i.test(msg))
+      msg += " — the token is missing a permission (needs Actions, Contents and Workflows: Read and write).";
+    throw new GhError(msg, res.status);
+  }
+  if (res.status === 204 || res.status === 202) return null;
+  return raw ? res.text() : res.json();
+}
+const repoPath = p => `/repos/${S.repo}${p}`;
+const contentsPath = (p, ref) => repoPath(`/contents/${p.split("/").map(encodeURIComponent).join("/")}` + (ref ? `?ref=${ref}` : ""));
+
+async function getFile(path, ref = "main") {
+  const j = await gh(contentsPath(path, ref));
+  return {text: b64decode(j.content || ""), sha: j.sha};
+}
+async function getRaw(path, ref) { return gh(contentsPath(path, ref), {raw: true}); }
+
+/* Read-modify-write one file on main. mutate(text) returns the new text;
+ * on a conflict (someone else saved first) it re-reads and re-applies once. */
+async function saveFile(path, mutate, message) {
+  for (let attempt = 0; ; attempt++) {
+    const cur = await getFile(path);
+    const next = mutate(cur.text);
+    if (next === cur.text) return cur;
+    try {
+      const r = await gh(contentsPath(path), {method: "PUT", body: {
+        message, content: b64encode(next), sha: cur.sha, branch: "main"}});
+      return {text: next, sha: r.content.sha};
+    } catch (e) {
+      if ((e.status === 409 || e.status === 422) && attempt === 0) continue;
+      throw e;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ loading */
+async function loadConfig() {
+  // Prices: the newest run's copy, else whatever was last pushed to main
+  const [cards, prices, settings, yml, changelog, tree] = await Promise.allSettled([
+    getFile("cards.json"), getRaw("prices.json", "results").catch(() => getRaw("prices.json", "main")), getFile("settings.json"),
+    getFile(WORKFLOW_PATH), getRaw("changelog.json", "main"),
+    gh(repoPath("/git/trees/main?recursive=1")),
+  ]);
+  if (cards.status === "rejected") throw cards.reason;
+  S.cfg = JSON.parse(cards.value.text); S.cfgSha = cards.value.sha;
+  if (prices.status === "fulfilled") try { S.prices = JSON.parse(prices.value); } catch (e) {}
+  if (settings.status === "fulfilled") { S.settings = JSON.parse(settings.value.text || "{}"); S.settingsSha = settings.value.sha; }
+  if (yml.status === "fulfilled") { S.yml = yml.value.text; S.ymlSha = yml.value.sha; }
+  if (changelog.status === "fulfilled") try { S.changelog = JSON.parse(changelog.value); } catch (e) {}
+  if (tree.status === "fulfilled") {
+    S.refs = new Set();
+    for (const t of tree.value.tree || []) {
+      const m = /^references\/([^/]+)\/[^/]+\.(png|jpe?g|webp)$/i.exec(t.path);
+      if (m) S.refs.add(m[1]);
+    }
+  }
+}
+async function loadActions() {
+  const j = await gh(repoPath(`/actions/workflows/${WORKFLOW}/runs?per_page=25`));
+  const before = new Map(S.actions.map(r => [r.id, r.status]));
+  S.actions = j.workflow_runs || [];
+  const finished = S.actions.filter(r => r.status === "completed" && before.has(r.id) && before.get(r.id) !== "completed");
+  return finished;
+}
+async function loadResults() {
+  try {
+    S.results = JSON.parse(await getRaw("runs.json", "results"));
+  } catch (e) {
+    if (e.status === 404) S.results = null; else throw e;
+  }
+}
+async function runData(id) {
+  if (!S.runData.has(id)) {
+    const [hits, etb] = await Promise.all([
+      getRaw(`runs/${id}/hits.json`, "results").then(JSON.parse).catch(() => []),
+      getRaw(`runs/${id}/etb.json`, "results").then(JSON.parse).catch(() => []),
+    ]);
+    S.runData.set(id, {hits, etb});
+  }
+  return S.runData.get(id);
+}
+
+/* ------------------------------------------------------------------ cards model */
+function cardRows(pendingAware = true) {
+  const table = (S.prices && S.prices.cards) || {};
+  const pct = num(S.settings?.cloud?.price_pct) ?? num(S.cfg?.defaults?.price_pct) ?? 100;
+  return (S.cfg?.cards || []).map(c => {
+    const p = table[c.key] || {};
+    const market = num(p.market);
+    let cap = num(c.max_price), source = "manual";
+    if (cap == null) { cap = market != null ? Math.round(market * pct) / 100 : num(S.cfg?.defaults?.max_price); source = market != null ? "market" : "default"; }
+    const label = c.label || c.key;
+    const [nameNum, setName] = label.split(" — ");
+    const m = /-(\d+)-[a-z-]+$/.exec(c.key);
+    const saved = c.enabled !== false;
+    const enabled = pendingAware && Cd.pending.has(c.key) ? Cd.pending.get(c.key) : saved;
+    return {
+      key: c.key, label, name: (nameNum || label).replace(/\s+\d+$/, "").trim(),
+      number: p.number || (m ? m[1] : ""), set: setName || "Other", rarity: p.rarity || "",
+      enabled, saved, queries: (c.queries || [c.key]).length,
+      market, cap, source, tcg: p.tcgplayer_id, hasRef: S.refs.has(c.key),
+    };
+  });
+}
+const tcgImg = (id, size = "200w") => id ? `https://tcgplayer-cdn.tcgplayer.com/product/${id}_${size}.jpg` : "";
+const enabledCards = () => cardRows(false).filter(c => c.enabled);
+const callsPerRun = (cards, etb = true) => cards.reduce((n, c) => n + c.queries, 0) + (etb ? ETB_CALLS : 0);
+
+/* Average billed minutes of recent successful runs, else a guess from card count */
+function minutesPerRun() {
+  const done = S.actions.filter(r => r.status === "completed" && r.conclusion === "success" && r.run_started_at).slice(0, 10);
+  if (done.length) {
+    const avg = done.reduce((n, r) => n + (Date.parse(r.updated_at) - Date.parse(r.run_started_at)) / 60000, 0) / done.length;
+    return Math.max(1, avg);
+  }
+  return 2 + enabledCards().length * 0.03;
+}
+
+/* ------------------------------------------------------------------ header */
+function lastReset(now = new Date()) {       // eBay's quota resets 07:00 UTC
+  const r = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 7));
+  if (r > now) r.setUTCDate(r.getUTCDate() - 1);
+  return r;
+}
+function renderQuota() {
+  const last = (S.results || []).find(r => r.api_left != null);
+  if (!last) { $("#q-num").textContent = "—"; $("#q-sub").textContent = "Shows after the first published run"; meter($("#q-meter"), 0); return; }
+  const at = new Date(last.finished || last.started);
+  const reset = at < lastReset();
+  const left = reset ? EBAY_DAILY : last.api_left;
+  $("#q-num").textContent = left.toLocaleString();
+  $("#q-sub").textContent = reset ? "Reset since the last run" : `As of the ${fmtClock(at)} run · resets 3 AM Eastern`;
+  meter($("#q-meter"), left / EBAY_DAILY);
+}
+function renderVersion() {
+  const v = S.changelog?.versions?.[0]?.version;
+  const b = $("#ver");
+  b.classList.toggle("hidden", !v);
+  if (v) b.textContent = "v" + v;
+}
+$("#ver").onclick = () => {
+  const vs = S.changelog?.versions || [];
+  $("#cl-body").innerHTML = vs.map(v => `<div class="rel"><div class="rel-head"><span class="rel-v">v${esc(v.version)}</span>
+      <span class="rel-t">${esc(v.title)}</span><span class="rel-d">${esc(v.date)}</span></div>
+      <ul>${(v.notes || []).map(n => `<li>${esc(n)}</li>`).join("")}</ul></div>`).join("");
+  $("#cl").classList.remove("hidden");
+};
+$("#cl-close").onclick = () => $("#cl").classList.add("hidden");
+$("#cl").onclick = e => { if (e.target.id === "cl") $("#cl").classList.add("hidden"); };
+
+(function theme() {
+  const saved = store.get("theme", null);
+  if (saved) document.documentElement.dataset.theme = saved;
+  $("#theme-btn").onclick = () => {
+    const cur = document.documentElement.dataset.theme ||
+      (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    const next = cur === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    store.set("theme", next);
+  };
+})();
+
+function show(view) {
+  S.view = view;
+  $$("#nav button").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  $$(".view").forEach(v => v.classList.toggle("hidden", v.id !== "view-" + view));
+  store.set("view", view);
+  ({run: renderRun, results: renderResults, cards: renderCards, schedule: renderSchedule, settings: renderSettings}[view] || (() => {}))();
+}
+$("#nav").onclick = e => { const b = e.target.closest("[data-view]"); if (b) show(b.dataset.view); };
+document.addEventListener("click", e => { const b = e.target.closest("[data-goto]"); if (b) show(b.dataset.goto); });
+
+/* ================================================================== RUN */
+const RN = {cards: [], type: "", sel: -1};
+
+function runArgs() {
+  const a = [];
+  RN.cards.forEach(k => a.push("--card", k));
+  if (RN.type) a.push("--type", RN.type);
+  const hours = $("#rn-hours").value.trim(), fresh = $("#rn-new").value.trim(), pct = $("#rn-pct").value.trim();
+  if (hours !== "") a.push("--auction-hours", String(+hours));
+  if (fresh !== "") a.push("--new-hours", String(+fresh));
+  if (pct !== "") a.push("--price-pct", String(+pct));
+  if ($("#rn-all").checked) a.push("--all");
+  return a;
+}
+function renderRunCost() {
+  const etb = $("#rn-etb").checked, hunter = $("#rn-hunter").checked;
+  const cards = RN.cards.length ? cardRows(false).filter(c => RN.cards.includes(c.key)) : enabledCards();
+  const calls = (hunter ? callsPerRun(cards, false) : 0) + (etb ? ETB_CALLS : 0);
+  $("#rn-cost").textContent = etb || hunter ? `≈ ${calls.toLocaleString()} eBay calls` : "Nothing selected";
+  $("#rn-go").disabled = !(etb || hunter);
+}
+["rn-etb", "rn-hunter", "rn-email"].forEach(id => $("#" + id).addEventListener("change", renderRunCost));
+$("#rn-type").onclick = e => {
+  const b = e.target.closest("[data-v]"); if (!b) return;
+  RN.type = b.dataset.v;
+  $$("#rn-type button").forEach(x => x.classList.toggle("active", x === b));
+};
+
+// card picker
+function renderChips() {
+  const rows = cardRows(false);
+  $("#rn-chips").innerHTML = RN.cards.map(k => {
+    const c = rows.find(r => r.key === k);
+    return `<span class="chip">${esc(c ? c.label : k)}<button data-unpick="${esc(k)}" title="Remove">×</button></span>`;
+  }).join("");
+  $("#rn-card-input").placeholder = RN.cards.length ? "Add another card…" :
+    `All ${enabledCards().length} cards switched on — type to pick specific ones`;
+  renderRunCost();
+}
+function renderSuggest() {
+  const q = $("#rn-card-input").value.trim().toLowerCase();
+  const box = $("#rn-suggest");
+  if (!q) { box.classList.add("hidden"); return; }
+  const words = q.split(/\s+/);
+  const hits = cardRows(false).filter(c => !RN.cards.includes(c.key) &&
+    words.every(w => (c.label + " " + c.key).toLowerCase().includes(w))).slice(0, 12);
+  RN.sel = Math.min(RN.sel, hits.length - 1);
+  box.innerHTML = hits.map((c, i) => `<div data-pick="${esc(c.key)}" class="${i === RN.sel ? "on" : ""}">${esc(c.label)}<small>${c.enabled ? "" : "off"}</small></div>`).join("")
+    || `<div class="muted">No card matches</div>`;
+  box.classList.remove("hidden");
+}
+function pick(key) { if (key && !RN.cards.includes(key)) RN.cards.push(key); $("#rn-card-input").value = ""; RN.sel = -1; renderSuggest(); renderChips(); }
+$("#rn-card-input").addEventListener("input", () => { RN.sel = 0; renderSuggest(); });
+$("#rn-card-input").addEventListener("keydown", e => {
+  const items = $$("#rn-suggest [data-pick]");
+  if (e.key === "ArrowDown") { RN.sel = Math.min(items.length - 1, RN.sel + 1); renderSuggest(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { RN.sel = Math.max(0, RN.sel - 1); renderSuggest(); e.preventDefault(); }
+  else if (e.key === "Enter" && items[RN.sel]) { pick(items[RN.sel].dataset.pick); e.preventDefault(); }
+  else if (e.key === "Escape") { $("#rn-suggest").classList.add("hidden"); }
+});
+$("#rn-card-input").addEventListener("blur", () => setTimeout(() => $("#rn-suggest").classList.add("hidden"), 150));
+$("#rn-suggest").addEventListener("mousedown", e => { const d = e.target.closest("[data-pick]"); if (d) { e.preventDefault(); pick(d.dataset.pick); } });
+$("#rn-chips").onclick = e => { const b = e.target.closest("[data-unpick]"); if (b) { RN.cards = RN.cards.filter(k => k !== b.dataset.unpick); renderChips(); } };
+
+$("#rn-go").onclick = async () => {
+  const active = S.actions.find(r => r.status !== "completed");
+  if (active && !confirm("A run is already going. Start another? It will wait until that one finishes.")) return;
+  const btn = $("#rn-go");
+  btn.disabled = true; btn.textContent = "Starting…";
+  const clicked = Date.now(), known = new Set(S.actions.map(r => r.id));
+  try {
+    await gh(repoPath(`/actions/workflows/${WORKFLOW}/dispatches`), {method: "POST", body: {ref: "main", inputs: {
+      etb: String($("#rn-etb").checked), hunter: String($("#rn-hunter").checked),
+      email: String($("#rn-email").checked), hunter_args: runArgs().join(" "),
+    }}});
+    // GitHub doesn't say which run it started; watch for it to appear
+    let found = null;
+    for (let i = 0; i < 12 && !found; i++) {
+      await sleep(i ? 2500 : 1500);
+      await loadActions();
+      found = S.actions.find(r => !known.has(r.id) && r.event === "workflow_dispatch" && Date.parse(r.created_at) > clicked - 60000);
+    }
+    if (found) { S.selectedRun = found.id; toast("Run started", "Watch it here, or close the page — it runs on GitHub either way.", "good"); }
+    else toast("Run requested", "GitHub hasn't listed it yet; it'll appear here shortly.");
+    renderRun(); schedulePoll(1000);
+  } catch (e) {
+    if (e.status !== 401) toast("Couldn't start the run", e.message, "bad");
+  } finally {
+    btn.textContent = "Run now"; renderRunCost();
+  }
+};
+
+function runDot(r) {
+  if (r.status !== "completed") return "run";
+  return r.conclusion === "success" ? "ok" : r.conclusion === "cancelled" ? "stop" : "fail";
+}
+const runLabel = r => r.event === "workflow_dispatch" ? "Manual" : r.event === "schedule" ? "Scheduled" : r.event;
+const runTime = r => new Date(r.run_started_at || r.created_at);
+const resultFor = r => (S.results || []).find(x => x.run_id === r.id);
+
+function typicalSeconds() {
+  const done = S.actions.filter(r => r.status === "completed" && r.conclusion === "success" && r.run_started_at).slice(0, 8);
+  if (!done.length) return 420;
+  return done.reduce((n, r) => n + (Date.parse(r.updated_at) - Date.parse(r.run_started_at)) / 1000, 0) / done.length;
+}
+
+function renderRun() {
+  renderRunCost();
+  renderNext();
+  const runs = S.actions;
+  const running = runs.filter(r => r.status !== "completed").length;
+  const badge = $("#nav-running");
+  badge.classList.toggle("hidden", !running); badge.textContent = running;
+  if (!runs.length) {
+    patch($("#runs-pills"), "");
+    patch($("#run-status"), `<span class="muted">No runs yet</span>`);
+    patch($("#run-steps"), `<div class="empty"><div>No runs yet. Press <b>Run now</b>, or wait for the schedule.</div></div>`);
+    return;
+  }
+  if (!runs.some(r => r.id === S.selectedRun)) S.selectedRun = (runs.find(r => r.status !== "completed") || runs[0]).id;
+  patch($("#runs-pills"), runs.slice(0, 15).map(r => {
+    const t = runTime(r);
+    return `<button class="job-pill ${r.id === S.selectedRun ? "active" : ""}" data-run="${r.id}" title="${esc(runLabel(r))} run #${r.run_number}">
+      <span class="dot ${runDot(r)}"></span>${esc(fmtDay(t) === "Today" ? fmtClock(t) : fmtDay(t) + " " + fmtClock(t))}</button>`;
+  }).join(""));
+  renderRunDetail();
+}
+$("#runs-pills").onclick = e => {
+  const b = e.target.closest("[data-run]"); if (!b) return;
+  S.selectedRun = +b.dataset.run; renderRun();
+  const r = S.actions.find(x => x.id === S.selectedRun);
+  if (r && !S.jobs[r.id]) loadJobs(r).then(renderRunDetail);
+};
+$("#runs-refresh").onclick = () => pollTick(true);
+
+async function loadJobs(r) {
+  try { S.jobs[r.id] = await gh(repoPath(`/actions/runs/${r.id}/jobs`)); } catch (e) {}
+}
+
+const ICON = {
+  ok: `<svg viewBox="0 0 24 24" fill="none" stroke="var(--good)" stroke-width="2.5"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`,
+  fail: `<svg viewBox="0 0 24 24" fill="none" stroke="var(--bad)" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>`,
+  skip: `<svg viewBox="0 0 24 24" fill="none" stroke="var(--faint)" stroke-width="2"><path d="M6 12h12"/></svg>`,
+  run: `<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5"><path d="M12 3a9 9 0 1 0 9 9"/></svg>`,
+  wait: `<svg viewBox="0 0 24 24" fill="none" stroke="var(--faint)" stroke-width="2"><circle cx="12" cy="12" r="7"/></svg>`,
+};
+// GitHub's own housekeeping steps; only ours are worth showing
+const HIDDEN_STEPS = /^(Set up job|Complete job|Post |Run actions\/|pip install|Run pip install)/;
+
+function renderRunDetail() {
+  const r = S.actions.find(x => x.id === S.selectedRun);
+  if (!r) return;
+  const t = runTime(r), active = r.status !== "completed";
+  const elapsed = ((active ? Date.now() : Date.parse(r.updated_at)) - t) / 1000;
+  const state = active ? (r.status === "queued" || r.status === "waiting" ? "Waiting to start" : "Running") :
+    {success: "Finished", failure: "Failed", cancelled: "Cancelled", timed_out: "Timed out"}[r.conclusion] || r.conclusion;
+  const res = resultFor(r);
+  const typical = typicalSeconds();
+  const bar = active && r.status === "in_progress"
+    ? `<div class="meter"><div style="width:${Math.min(95, 100 * elapsed / typical).toFixed(0)}%"></div></div>` : "";
+  patch($("#run-status"), `<span class="dot ${runDot(r)}"></span>
+    <span class="title">${esc(runLabel(r))} run #${r.run_number} · ${esc(fmtDay(t))} ${esc(fmtClock(t))}</span>
+    <span class="muted">${esc(state)} · ${fmtDur(elapsed)}${active && r.status === "in_progress" ? ` of ~${fmtDur(typical)}` : ""}</span>
+    ${bar}
+    <span class="actions">
+      ${active ? `<button class="btn sm danger" id="run-cancel">Cancel</button>` : ""}
+      ${res ? `<button class="btn sm" data-open-result="${esc(res.id)}">View results</button>` : ""}
+      <a class="btn sm" href="${esc(safeUrl(r.html_url))}" target="_blank" rel="noopener">Log on GitHub ↗</a>
+    </span>`);
+  const cancel = $("#run-cancel");
+  if (cancel) cancel.onclick = async () => {
+    if (!confirm("Cancel this run? Anything it already found stays marked as seen only if it got that far.")) return;
+    try { await gh(repoPath(`/actions/runs/${r.id}/cancel`), {method: "POST"}); toast("Cancelling…"); schedulePoll(1500); }
+    catch (e) { toast("Couldn't cancel", e.message, "bad"); }
+  };
+
+  const job = (S.jobs[r.id]?.jobs || [])[0];
+  let html = "";
+  if (res) {
+    const bits = [];
+    if (res.stamped) bits.push(`<span class="badge stamped">${res.stamped} stamped</span>`);
+    bits.push(`<span class="badge ${res.matches ? "cards" : "quiet"}">${plural(res.matches, "match", "matches")}</span>`);
+    if (res.deals) bits.push(`<span class="badge deal">${res.deals} at ≤60% of market</span>`);
+    if (res.failures?.length) bits.push(`<span class="badge fail">${esc(res.failures.join(" & "))} failed</span>`);
+    bits.push(`<span class="muted">${res.emailed ? "Emailed" : res.email_error ? "Email failed: " + esc(res.email_error) : (res.matches || res.stamped) ? "Not emailed" : "Nothing new, no email"}</span>`);
+    if (res.api_used != null) bits.push(`<span class="muted">· ${res.api_used} eBay calls</span>`);
+    html += `<div class="run-sum">${bits.join("")}</div>`;
+  } else if (!active && r.conclusion === "success") {
+    html += `<div class="run-sum muted">This run finished before the dashboard existed, or its results aren't published yet.</div>`;
+  }
+  if (job) {
+    const steps = job.steps.filter(s => !HIDDEN_STEPS.test(s.name));
+    html += steps.map(s => {
+      const st = s.status !== "completed" ? (s.status === "in_progress" ? "run" : "wait") :
+        s.conclusion === "success" ? "ok" : s.conclusion === "skipped" ? "skip" : "fail";
+      const cls = st === "run" ? "active" : st === "wait" ? "pending" : st === "fail" ? "failed" : "";
+      const dur = s.started_at ? ((s.completed_at ? Date.parse(s.completed_at) : Date.now()) - Date.parse(s.started_at)) / 1000 : null;
+      return `<div class="step ${cls}"><span class="ico">${ICON[st]}</span><span class="nm">${esc(stepName(s.name))}</span>
+        <span class="tm">${dur != null && st !== "skip" ? fmtDur(dur) : ""}</span></div>`;
+    }).join("");
+  } else if (r.status === "queued" || r.status === "waiting") {
+    html += `<div class="empty"><div>Waiting for GitHub to start it. Usually under a minute; longer if another run is still going.</div></div>`;
+  } else {
+    html += `<div class="empty"><div class="muted">Loading steps…</div></div>`;
+  }
+  patch($("#run-steps"), html);
+}
+function stepName(n) {
+  return {"Scan and email": "Scan eBay, check photos, email", "Publish results for the dashboard": "Publish results for this dashboard",
+          "Restore seen lists from the last run": "Load the seen lists", "Save seen lists for the next run": "Save the seen lists",
+          "Keep the reports and logs for 14 days": "Keep the reports and logs"}[n] || n;
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-open-result]");
+  if (b) { RS.sel = b.dataset.openResult; show("results"); }
+});
+
+/* ---- next scheduled run (Run tab card) */
+function renderNext() {
+  const sch = parseSchedule(S.yml);
+  const s = $("#nx-summary"), n = $("#nx-next");
+  if (!sch.ok) { s.textContent = "Couldn't read the schedule"; n.textContent = ""; return; }
+  if (sch.paused) { s.textContent = "Paused — only Run now starts runs."; n.textContent = ""; return; }
+  s.textContent = sch.every ? describeEvery(sch) : "Custom schedule";
+  const next = nextRun(sch);
+  n.textContent = next ? `Next: ${fmtDay(next)} ${fmtClock(next)} (${fmtIn(next - Date.now())}), if GitHub is on time.` : "";
+}
+
+/* ================================================================== RESULTS */
+const RS = {sel: null, list: "", filter: "finds", q: "", sort: "deal", items: [], shown: [], limit: 240};
+Object.assign(RS, store.get("results", {}), {sel: null, q: "", limit: 240});
+
+function runBadges(r) {
+  const b = [];
+  if (r.failures?.length) b.push(`<span class="badge fail" title="${esc(r.failures.join(", "))} failed">failed</span>`);
+  if (r.stamped) b.push(`<span class="badge stamped">${r.stamped} stamped</span>`);
+  if (r.matches) b.push(`<span class="badge cards">${plural(r.matches, "match", "matches")}</span>`);
+  if (r.deals) b.push(`<span class="badge deal">${r.deals} deal${r.deals === 1 ? "" : "s"}</span>`);
+  if (!b.length) b.push(`<span class="badge quiet">nothing new</span>`);
+  return b.join("");
+}
+function recentRuns(hours = 24) { return (S.results || []).filter(r => Date.now() - Date.parse(r.started) < hours * 3600e3); }
+
+function renderResultList() {
+  $$("#rl-filters button").forEach(b => b.classList.toggle("active", b.dataset.f === RS.list));
+  if (S.results == null) {
+    patch($("#rl-body"), `<div class="empty"><div>No published runs yet.<br><span class="hint">Each run publishes here once it finishes.</span></div></div>`);
+    return;
+  }
+  const recent = recentRuns();
+  const agg = recent.reduce((a, r) => ({stamped: a.stamped + r.stamped, matches: a.matches + r.matches, deals: a.deals + r.deals}), {stamped: 0, matches: 0, deals: 0});
+  let html = `<div class="ritem ${RS.sel === "__24h" ? "active" : ""}" data-res="__24h">
+      <div class="r1"><b>Last 24 hours</b>${runBadges(agg)}</div>
+      <div class="r2">${plural(recent.length, "run")} combined</div></div>`;
+  let day = null;
+  for (const r of S.results) {
+    if (RS.list === "finds" && !(r.matches || r.stamped)) continue;
+    if (RS.list === "stamped" && !r.stamped) continue;
+    const t = new Date(r.started), d = fmtDay(t);
+    if (d !== day) { html += `<div class="rdate">${esc(d)}</div>`; day = d; }
+    html += `<div class="ritem ${RS.sel === r.id ? "active" : ""}" data-res="${esc(r.id)}">
+      <div class="r1"><b>${esc(fmtClock(t))}</b><span class="muted">${r.event === "workflow_dispatch" ? "manual" : r.event === "schedule" ? "scheduled" : esc(r.event)}</span>${runBadges(r)}</div>
+      <div class="r2" title="${esc(r.info)}">${esc(r.info || "")}</div></div>`;
+  }
+  patch($("#rl-body"), html);
+}
+$("#rl-filters").onclick = e => { const b = e.target.closest("[data-f]"); if (b) { RS.list = b.dataset.f; saveRS(); renderResultList(); } };
+$("#rl-body").onclick = e => { const d = e.target.closest("[data-res]"); if (d) { RS.sel = d.dataset.res; RS.limit = 240; renderResults(); } };
+function saveRS() { store.set("results", {list: RS.list, filter: RS.filter, sort: RS.sort}); }
+
+/* One shape for Card Hunter matches and ETB listings */
+function normalize(kind, r, runId) {
+  const it = r.item || {};
+  const price = num(it.price?.value) ?? num(it.currentBidPrice?.value);
+  const ships = (it.shippingOptions || []).map(o => num(o.shippingCost?.value)).filter(v => v != null);
+  const ship = ships.length ? Math.min(...ships) : null;
+  const total = price == null ? null : Math.round((price + (ship || 0)) * 100) / 100;
+  const market = kind === "hunt" ? num(r.market) : null;
+  const pct = total != null && market ? Math.round(100 * total / market) : null;
+  const opts = it.buyingOptions || [];
+  const auction = opts.includes("AUCTION");
+  const img = it.image?.imageUrl || "";
+  const minScore = num(r.min_score) ?? 55;
+  return {
+    kind, runId, id: it.itemId || Math.random().toString(36), title: it.title || "(no title)",
+    url: safeUrl(it.itemWebUrl), img: img.replace(/s-l\d+/, "s-l500"),
+    photo: kind === "hunt" && r.photo ? r.photo : img.replace(/s-l\d+/, "s-l1600"),
+    card: kind === "hunt" ? (r.label || r.card) : r.card, key: kind === "hunt" ? r.card : null,
+    score: num(r.score), strong: kind === "hunt" && (num(r.score) || 0) >= Math.min(95, minScore + 15),
+    verdict: kind === "etb" ? (r.verdict || {}) : null,
+    stamped: kind === "etb" && r.verdict?.verdict === "stamped",
+    price, ship, shipKnown: ships.length > 0, total, market, pct, auction,
+    bestOffer: opts.includes("BEST_OFFER"), bids: it.bidCount, end: auction && it.itemEndDate ? Date.parse(it.itemEndDate) : null,
+    seller: it.seller?.username, feedback: it.seller?.feedbackPercentage, condition: it.condition,
+  };
+}
+const FILTERS = [
+  ["finds", "Finds", x => x.kind === "hunt" || x.stamped],
+  ["stamped", "Stamped", x => x.stamped],
+  ["deals", "≤60% of market", x => x.pct != null && x.pct <= 60],
+  ["strong", "Strong matches", x => x.strong],
+  ["auction", "Auctions", x => x.auction && (x.kind === "hunt" || x.stamped)],
+  ["bin", "Buy It Now", x => !x.auction && (x.kind === "hunt" || x.stamped)],
+  ["etb", "All ETB listings", x => x.kind === "etb"],
+];
+const SORTS = {
+  deal: (a, b) => (b.stamped - a.stamped) || ((a.pct ?? 1e4) - (b.pct ?? 1e4)) || ((a.total ?? 1e9) - (b.total ?? 1e9)),
+  price: (a, b) => (a.total ?? 1e9) - (b.total ?? 1e9),
+  score: (a, b) => (b.stamped - a.stamped) || ((b.score ?? 0) - (a.score ?? 0)),
+  ending: (a, b) => (a.end ?? 9e15) - (b.end ?? 9e15),
+};
+
+async function renderResults() {
+  renderResultList();
+  if (S.results == null) {
+    $("#rv-title").textContent = "Results";
+    $("#rv-sub").textContent = "";
+    patch($("#rv-filters"), "");
+    patch($("#rv-grid"), `<div class="empty" style="grid-column:1/-1"><div>Nothing published yet. The next run after this update puts its results here.</div></div>`);
+    return;
+  }
+  if (!RS.sel) RS.sel = "__24h";
+  const runs = RS.sel === "__24h" ? recentRuns() : S.results.filter(r => r.id === RS.sel);
+  const want = runs.map(r => r.id);
+  const key = want.join("|");
+  if (RS.key !== key) {
+    RS.key = key;
+    patch($("#rv-grid"), `<div class="empty" style="grid-column:1/-1"><div class="muted">Loading…</div></div>`);
+    const data = await Promise.all(want.map(id => runData(id).then(d => ({id, d}))));
+    if (RS.key !== key) return;       // clicked something else meanwhile
+    RS.items = data.flatMap(({id, d}) => [...d.etb.map(e => normalize("etb", e, id)), ...d.hits.map(h => normalize("hunt", h, id))]);
+  }
+  if (RS.sel === "__24h") {
+    $("#rv-title").textContent = "Last 24 hours";
+    $("#rv-sub").textContent = `${plural(runs.length, "run")} combined`;
+  } else {
+    const r = runs[0], t = new Date(r.started);
+    $("#rv-title").textContent = `${fmtDay(t)} ${fmtClock(t)} · ${r.event === "workflow_dispatch" ? "manual run" : "scheduled run"}`;
+    $("#rv-sub").textContent = [r.info, r.emailed ? "emailed" : "", r.failures?.length ? r.failures.join(" & ") + " failed" : ""].filter(Boolean).join(" · ");
+  }
+  patch($("#rv-filters"), FILTERS.map(([k, t, f]) => {
+    const n = RS.items.filter(f).length;
+    return (k === "stamped" || k === "deals") && !n && RS.filter !== k ? "" :
+      `<button data-rf="${k}" class="${RS.filter === k ? "active" : ""}">${esc(t)}<span class="n">${n}</span></button>`;
+  }).join(""));
+  $("#rv-sort").value = RS.sort;
+  const f = (FILTERS.find(x => x[0] === RS.filter) || FILTERS[0])[2];
+  const words = RS.q.toLowerCase().split(/\s+/).filter(Boolean);
+  RS.shown = RS.items.filter(f).filter(x => words.every(w => (x.card + " " + x.title).toLowerCase().includes(w))).sort(SORTS[RS.sort]);
+  if (!RS.shown.length) {
+    patch($("#rv-grid"), `<div class="empty" style="grid-column:1/-1"><div>${RS.items.length ? "Nothing matches these filters." : "This run found nothing new."}</div></div>`);
+    return;
+  }
+  const more = RS.shown.length > RS.limit
+    ? `<div style="grid-column:1/-1;text-align:center;padding:8px"><button class="btn" id="rv-more">Show all ${RS.shown.length}</button></div>` : "";
+  patch($("#rv-grid"), RS.shown.slice(0, RS.limit).map((x, i) => listingCard(x, i)).join("") + more);
+  const m = $("#rv-more"); if (m) m.onclick = () => { RS.limit = 1e9; renderResults(); };
+}
+function priceBits(x) {
+  const head = x.total == null ? "?" : money(x.total);
+  const sub = x.price == null ? "" : !x.shipKnown ? "+ shipping ?" : x.ship === 0 ? "free shipping" : `${money(x.price)} + ${money(x.ship)} ship`;
+  let mk = "", cls = "";
+  if (x.market) {
+    mk = `Market ${money(x.market)}` + (x.pct != null ? ` · ${x.pct}%${x.shipKnown ? "" : "+"} of market` : "");
+    cls = x.pct == null ? "" : x.pct <= 60 ? "deal" : x.pct <= 90 ? "good" : x.pct > 100 ? "over" : "";
+  }
+  return {head, sub, mk, cls};
+}
+function kindText(x) {
+  if (!x.auction) return "Buy It Now" + (x.bestOffer ? " · offers" : "");
+  let s = "Auction";
+  if (x.end) {
+    const h = (x.end - Date.now()) / 3600e3;
+    s += h <= 0 ? " · ended" : h < 1 ? ` · ${Math.round(h * 60)}m left` : ` · ${Math.floor(h)}h ${Math.round(h % 1 * 60)}m left`;
+  }
+  if (x.bids != null) s += ` · ${plural(x.bids, "bid")}`;
+  return s;
+}
+function scoreBadge(x) {
+  if (x.kind === "etb") return x.stamped ? `<span class="sbadge stamp">Stamped ${(x.verdict.score || 0).toFixed(2)}</span>`
+    : `<span class="sbadge plain">${esc({no_stamp: "No stamp", unclear: "Unclear"}[x.verdict.verdict] || "Unchecked")}</span>`;
+  return `<span class="sbadge ${x.strong ? "strong" : "ok"}">${x.strong ? "Strong" : "Art"} match ${x.score ?? ""}</span>`;
+}
+function listingCard(x, i) {
+  const p = priceBits(x);
+  return `<div class="lcard ${x.stamped ? "stamped" : ""}" data-i="${i}">
+    <div class="ph"><img loading="lazy" src="${esc(safeUrl(x.img))}" alt="" referrerpolicy="no-referrer"></div>
+    <div class="bd">
+      <div class="cd">${esc(x.card)}</div>
+      <div class="tt" title="${esc(x.title)}">${esc(x.title)}</div>
+      <div class="pr"><b>${esc(p.head)}</b><small>${esc(p.sub)}</small></div>
+      ${p.mk ? `<div class="mk ${p.cls}">${esc(p.mk)}</div>` : ""}
+      <div class="ft">${scoreBadge(x)}<span>${esc(kindText(x))}</span></div>
+    </div></div>`;
+}
+$("#rv-filters").onclick = e => { const b = e.target.closest("[data-rf]"); if (b) { RS.filter = b.dataset.rf; RS.limit = 240; saveRS(); renderResults(); } };
+$("#rv-sort").onchange = e => { RS.sort = e.target.value; saveRS(); renderResults(); };
+$("#rv-search").addEventListener("input", e => { RS.q = e.target.value; renderResults(); });
+$("#rv-grid").onclick = e => { const c = e.target.closest("[data-i]"); if (c) openReview(+c.dataset.i); };
+
+/* ---- review mode: listing photo next to the card it should be */
+const RV = {i: 0};
+function refImage(x) {
+  if (x.kind !== "hunt") return "";
+  const p = S.prices?.cards?.[x.key];
+  return p?.tcgplayer_id ? tcgImg(p.tcgplayer_id, "in_1000x1000") : "";
+}
+function openReview(i) { RV.i = i; renderReview(); $("#rv").classList.remove("hidden"); }
+function closeReview() { $("#rv").classList.add("hidden"); $("#rv-photo").src = ""; }
+function renderReview() {
+  const list = RS.shown, x = list[RV.i];
+  if (!x) return closeReview();
+  const p = priceBits(x);
+  $("#rv-count").textContent = `${RV.i + 1} / ${list.length}`;
+  $("#rv-ttl").textContent = x.card;
+  $("#rv-photo").src = safeUrl(x.photo);
+  const ref = refImage(x), refImg = $("#rv-ref");
+  $("#rv-ref-fig").classList.toggle("hidden", !ref);
+  refImg.dataset.try = "0";
+  refImg.src = ref;
+  $("#rv-info").innerHTML = `<span class="pr"><b>${esc(p.head)}</b> <span style="color:#8e96a6">${esc(p.sub)}</span></span>
+    ${p.mk ? `<span class="mk ${p.cls}">${esc(p.mk)}</span>` : ""}
+    ${scoreBadge(x)}<span style="color:#8e96a6">${esc(kindText(x))}</span>
+    ${x.seller ? `<span style="color:#8e96a6">Seller ${esc(x.seller)}${x.feedback ? ` (${esc(x.feedback)}%)` : ""}</span>` : ""}
+    <span style="flex-basis:100%;color:#c9ced8">${esc(x.title)}</span>
+    ${x.verdict?.reason ? `<span style="flex-basis:100%;color:#8e96a6">${esc(x.verdict.reason)}</span>` : ""}
+    <a class="btn primary" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Open on eBay ↗</a>`;
+}
+// TCGplayer's big image isn't there for every product; step down a size
+$("#rv-ref").addEventListener("error", e => {
+  const img = e.target, tries = ["in_1000x1000", "400w", "200w"], n = +img.dataset.try + 1;
+  if (n < tries.length && img.src) { img.dataset.try = n; img.src = img.src.replace(/_(in_1000x1000|400w|200w)\.jpg$/, `_${tries[n]}.jpg`); }
+  else $("#rv-ref-fig").classList.add("hidden");
+});
+$("#rv-close").onclick = closeReview;
+$("#rv-prev").onclick = () => { RV.i = (RV.i - 1 + RS.shown.length) % RS.shown.length; renderReview(); };
+$("#rv-next").onclick = () => { RV.i = (RV.i + 1) % RS.shown.length; renderReview(); };
+document.addEventListener("keydown", e => {
+  if ($("#rv").classList.contains("hidden")) return;
+  if (e.key === "Escape") closeReview();
+  else if (e.key === "ArrowLeft") $("#rv-prev").click();
+  else if (e.key === "ArrowRight") $("#rv-next").click();
+  else if (e.key === "Enter") { const x = RS.shown[RV.i]; if (x && x.url !== "#") window.open(x.url, "_blank", "noopener"); }
+});
+(function swipe() {
+  let x0 = null;
+  $("#rv").addEventListener("touchstart", e => { x0 = e.touches[0].clientX; }, {passive: true});
+  $("#rv").addEventListener("touchend", e => {
+    if (x0 == null) return;
+    const dx = e.changedTouches[0].clientX - x0; x0 = null;
+    if (dx < -50) $("#rv-next").click(); else if (dx > 50) $("#rv-prev").click();
+  });
+})();
+
+/* ================================================================== CARDS */
+const Cd = {q: "", set: "", status: "", sort: "set", pending: new Map()};
+Object.assign(Cd, store.get("cardsView", {}), {q: "", pending: new Map()});
+const cardNum = c => parseInt(String(c.number).split("/")[0], 10) || 0;
+
+function visibleCards() {
+  const words = Cd.q.toLowerCase().split(/\s+/).filter(Boolean);
+  const list = cardRows().filter(c =>
+    (!Cd.set || c.set === Cd.set) && (!Cd.status || (Cd.status === "on") === c.enabled) &&
+    words.every(w => [c.name, c.number, c.set, c.rarity, c.key].join(" ").toLowerCase().includes(w)));
+  const by = {
+    set: (a, b) => a.set.localeCompare(b.set) || cardNum(a) - cardNum(b),
+    name: (a, b) => a.name.localeCompare(b.name) || cardNum(a) - cardNum(b),
+    "market-desc": (a, b) => (b.market ?? -1) - (a.market ?? -1),
+    "market-asc": (a, b) => (a.market ?? 1e9) - (b.market ?? 1e9),
+  }[Cd.sort] || (() => 0);
+  return list.sort(by);
+}
+function cardRow(c) {
+  const img = c.tcg ? `<img class="thumb" loading="lazy" src="${esc(tcgImg(c.tcg))}" alt="">` : `<div class="thumb"></div>`;
+  const cap = money(c.cap) + (c.source === "manual" ? `<span class="tag" title="Fixed by hand in cards.json">fixed</span>` :
+                              c.source === "default" ? `<span class="tag" title="No market price found; using the default cap">default</span>` : "");
+  const noRef = c.hasRef ? "" : `<span class="tag warn" title="No reference image in references/${esc(c.key)}/ — Card Hunter skips it">no art</span>`;
+  const link = c.tcg ? ` <a href="https://www.tcgplayer.com/product/${esc(c.tcg)}" target="_blank" rel="noopener">↗</a>` : "";
+  return `<tr class="${c.enabled ? "" : "off"} ${c.enabled !== c.saved ? "changed" : ""}">
+    <td><input type="checkbox" data-card="${esc(c.key)}" ${c.enabled ? "checked" : ""}></td>
+    <td>${img}</td>
+    <td>${esc(c.name)}${noRef}<div class="sub">${esc(c.key)}</div></td>
+    <td class="num">${esc(c.number)}</td><td class="hide-sm">${esc(c.set)}</td><td class="hide-sm">${esc(c.rarity)}</td>
+    <td class="money">${money(c.market)}${link}</td><td class="money">${cap}</td></tr>`;
+}
+function renderCards() {
+  if (!S.cfg) return;
+  const all = cardRows(), list = visibleCards();
+  const sets = [...new Set(all.map(c => c.set))].sort();
+  $("#c-sets").innerHTML = [["", "All sets"], ...sets.map(s => [s, s])].map(([v, t]) =>
+    `<button data-set="${esc(v)}" class="${Cd.set === v ? "active" : ""}">${esc(t)}</button>`).join("");
+  $$("#c-status button").forEach(b => b.classList.toggle("active", b.dataset.status === Cd.status));
+  $("#c-sort").value = Cd.sort;
+  const on = all.filter(c => c.enabled);
+  $("#c-count").textContent = `${on.length} of ${all.length} cards hunting` + (list.length !== all.length ? ` · ${list.length} shown` : "");
+  const perDay = runsPerDay(parseSchedule(S.yml));
+  const daily = callsPerRun(on) * perDay;
+  $("#c-budget").innerHTML = perDay
+    ? `≈ ${callsPerRun(on).toLocaleString()} eBay calls a run · <span class="${daily > EBAY_DAILY ? "bad-t" : daily > EBAY_DAILY * .8 ? "warn-t" : ""}">${Math.round(daily).toLocaleString()} a day</span> of ${EBAY_DAILY.toLocaleString()}`
+    : `≈ ${callsPerRun(on).toLocaleString()} eBay calls a run (schedule paused)`;
+  let html = "", group = null;
+  for (const c of list) {
+    if (Cd.sort === "set" && c.set !== group) {
+      group = c.set;
+      const inSet = list.filter(x => x.set === group), setOn = inSet.filter(x => x.enabled).length;
+      html += `<tr class="grp"><td><input type="checkbox" data-set-toggle="${esc(group)}" ${setOn === inSet.length ? "checked" : ""}
+                 ${setOn && setOn < inSet.length ? "data-mixed" : ""} title="Turn the whole set on or off"></td>
+               <td colspan="7">${esc(group)}<span class="hint">${plural(inSet.length, "card")} · ${setOn} hunting</span></td></tr>`;
+    }
+    html += cardRow(c);
+  }
+  $("#c-rows").innerHTML = html || `<tr><td colspan="8" class="empty">No cards match.</td></tr>`;
+  $$("[data-mixed]").forEach(el => el.indeterminate = true);
+  const n = Cd.pending.size;
+  $("#c-savebar").classList.toggle("hidden", !n);
+  $("#c-pending").textContent = n ? `${plural(n, "unsaved change")}` : "";
+}
+function setEnabled(keys, enabled) {
+  const saved = new Map(cardRows(false).map(c => [c.key, c.enabled]));
+  for (const k of keys) {
+    if (saved.get(k) === enabled) Cd.pending.delete(k); else Cd.pending.set(k, enabled);
+  }
+  renderCards();
+}
+function saveCardsView() { store.set("cardsView", {set: Cd.set, status: Cd.status, sort: Cd.sort}); }
+$("#c-search").addEventListener("input", e => { Cd.q = e.target.value; renderCards(); });
+$("#c-sort").onchange = e => { Cd.sort = e.target.value; saveCardsView(); renderCards(); };
+$("#c-sets").onclick = e => { const b = e.target.closest("[data-set]"); if (b) { Cd.set = b.dataset.set; saveCardsView(); renderCards(); } };
+$("#c-status").onclick = e => { const b = e.target.closest("[data-status]"); if (b) { Cd.status = b.dataset.status; saveCardsView(); renderCards(); } };
+$("#c-rows").addEventListener("change", e => {
+  const t = e.target;
+  if (t.dataset.card) setEnabled([t.dataset.card], t.checked);
+  else if (t.dataset.setToggle != null) setEnabled(visibleCards().filter(c => c.set === t.dataset.setToggle).map(c => c.key), t.checked);
+});
+$("#c-on").onclick = () => setEnabled(visibleCards().filter(c => !c.enabled).map(c => c.key), true);
+$("#c-off").onclick = () => {
+  const keys = visibleCards().filter(c => c.enabled).map(c => c.key);
+  if (keys.length > 10 && !confirm(`Turn off all ${keys.length} cards shown?`)) return;
+  setEnabled(keys, false);
+};
+$("#c-discard").onclick = () => { Cd.pending.clear(); renderCards(); };
+$("#c-save").onclick = async () => {
+  const changes = new Map(Cd.pending), btn = $("#c-save");
+  const on = [...changes.values()].filter(Boolean).length, off = changes.size - on;
+  const msg = "Dashboard: " + [on && `turn on ${plural(on, "card")}`, off && `turn off ${plural(off, "card")}`].filter(Boolean).join(", ");
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    const r = await saveFile("cards.json", text => {
+      const cfg = JSON.parse(text);
+      for (const c of cfg.cards) {
+        if (!changes.has(c.key)) continue;
+        if (changes.get(c.key)) delete c.enabled; else c.enabled = false;
+      }
+      return JSON.stringify(cfg, null, 2) + "\n";
+    }, msg);
+    S.cfg = JSON.parse(r.text); S.cfgSha = r.sha;
+    Cd.pending.clear();
+    toast("Saved", "The next run uses these cards.", "good");
+  } catch (e) {
+    if (e.status !== 401) toast("Couldn't save", e.message, "bad");
+  } finally {
+    btn.disabled = false; btn.textContent = "Save";
+    renderCards(); renderChips();
+  }
+};
+window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty || ST.dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+/* ================================================================== SCHEDULE */
+const SCHED_RE = /(  # --- schedule start ---\r?\n)([\s\S]*?)(  # --- schedule end ---)/;
+const EVERY = [2, 3, 4, 6, 8, 12, 24];
+
+function expandHours(h) {
+  if (h === "*") return [...Array(24).keys()];
+  let m = /^\*\/(\d+)$/.exec(h);
+  if (m) { const n = +m[1]; return [...Array(24).keys()].filter(x => x % n === 0); }
+  const out = new Set();
+  for (const part of h.split(",")) {
+    m = /^(\d+)(?:-(\d+))?(?:\/(\d+))?$/.exec(part);
+    if (!m) return null;
+    const a = +m[1], b = m[2] != null ? +m[2] : a, step = m[3] ? +m[3] : 1;
+    for (let x = a; x <= b; x += step) if (x < 24) out.add(x);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+/* The workflow's schedule, as {ok, paused, custom, minute, hoursUtc, every, startLocal} */
+function parseSchedule(yml) {
+  const m = SCHED_RE.exec(yml || "");
+  if (!m) return {ok: false};
+  const crons = [...m[2].matchAll(/^\s*-\s*cron:\s*["']([^"']+)["']/gm)].map(x => x[1].trim());
+  if (!crons.length) return {ok: true, paused: true, crons};
+  if (crons.length === 1) {
+    const f = crons[0].split(/\s+/);
+    if (f.length === 5 && /^\d+$/.test(f[0]) && f.slice(2).every(x => x === "*")) {
+      const hoursUtc = expandHours(f[1]);
+      if (hoursUtc && hoursUtc.length) {
+        const sch = {ok: true, paused: false, minute: +f[0], hoursUtc, crons};
+        // Evenly spaced in local time? Then it's "every N hours from H"
+        const local = localTimes(sch).map(d => d.getHours() * 60 + d.getMinutes()).sort((a, b) => a - b);
+        const n = 24 / local.length;
+        const even = local.every((t, i) => i === 0 || t - local[i - 1] === n * 60);
+        if (EVERY.includes(n) && even) { sch.every = n; sch.startLocal = Math.floor(local[0] / 60); }
+        else sch.custom = true;
+        return sch;
+      }
+    }
+  }
+  return {ok: true, custom: true, crons};
+}
+/* Today's run times as local Dates */
+function localTimes(sch) {
+  const now = new Date();
+  return (sch.hoursUtc || []).map(h => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, sch.minute)));
+}
+function nextRun(sch) {
+  if (!sch.ok || sch.paused || !sch.hoursUtc) return null;
+  const now = Date.now();
+  for (let day = 0; day < 2; day++)
+    for (const d of localTimes(sch).map(d => new Date(+d + day * 864e5)).sort((a, b) => a - b))
+      if (+d > now) return d;
+  return null;
+}
+function runsPerDay(sch) { return !sch.ok || sch.paused ? 0 : sch.hoursUtc ? sch.hoursUtc.length : 6; }
+function describeEvery(sch) {
+  const first = localTimes(sch).sort((a, b) => a.getHours() * 60 + a.getMinutes() - (b.getHours() * 60 + b.getMinutes()))[0];
+  return sch.every === 24 ? `Once a day at ${fmtClock(first)}` : `Every ${sch.every} hours, from ${fmtClock(first)}`;
+}
+/* Everything between the markers for the chosen schedule */
+function scheduleBlock(every, startLocal, minute = 17) {
+  if (!every) return "  # Paused on the dashboard. Pick a schedule there to turn it back on.\n";
+  const off = new Date().getTimezoneOffset();          // minutes to add to local for UTC
+  const hours = new Set();
+  let min = null;
+  for (let h = startLocal; h < startLocal + 24; h += every) {
+    const utc = ((h % 24) * 60 + minute + off + 1440 * 2) % 1440;
+    hours.add(Math.floor(utc / 60)); min = utc % 60;
+  }
+  const sorted = [...hours].sort((a, b) => a - b);
+  const tz = -off / 60;
+  const desc = every === 24 ? "once a day" : `every ${every} hours`;
+  return `  schedule:\n` +
+    `    # Set on the dashboard: ${desc} from ${fmtClock(new Date(2000, 0, 1, startLocal, minute))} (UTC${tz >= 0 ? "+" : ""}${tz}).\n` +
+    `    # Hours below are UTC. Change it on the dashboard's Schedule tab.\n` +
+    `    - cron: "${min} ${sorted.join(",")} * * *"\n`;
+}
+const SC = {every: null, start: 0, dirty: false};
+
+function scheduleFromForm() {
+  const block = scheduleBlock(SC.every, SC.start);
+  const m = SCHED_RE.exec(S.yml);
+  return m ? S.yml.replace(SCHED_RE, `$1${block}$3`) : null;
+}
+function renderSchedule() {
+  const cur = parseSchedule(S.yml);
+  if (!SC.dirty) {
+    SC.every = cur.paused ? 0 : cur.every ?? null;
+    SC.start = cur.startLocal ?? 0;
+  }
+  $$("#sc-every button").forEach(b => b.classList.toggle("active", +b.dataset.v === SC.every));
+  const custom = $("#sc-custom");
+  custom.classList.toggle("hidden", !(cur.custom && !SC.dirty));
+  if (cur.custom) custom.textContent = `The workflow file has a custom schedule (${(cur.crons || []).join("; ")}). Pick one above to replace it.`;
+  if (!cur.ok) { custom.classList.remove("hidden"); custom.textContent = "Couldn't find the schedule markers in the workflow file."; }
+
+  const every = SC.every;
+  $("#sc-start-row").classList.toggle("hidden", !every);
+  if (every) {
+    $("#sc-start-label").textContent = every === 24 ? "Time" : "Runs start from";
+    const opts = [...Array(every === 24 ? 24 : every).keys()];
+    $("#sc-start").innerHTML = opts.map(h => {
+      const times = every === 24 ? fmtClock(new Date(2000, 0, 1, h, 17)) :
+        [0, 1].map(k => fmtClock(new Date(2000, 0, 1, h + k * every, 17))).join(", ") + ", …";
+      return `<option value="${h}" ${h === SC.start ? "selected" : ""}>${esc(times)}</option>`;
+    }).join("");
+  }
+  const preview = every ? parseSchedule(scheduleFromForm() || "") : every === 0 ? {ok: true, paused: true} : cur;
+  const times = preview.ok && preview.hoursUtc ? localTimes(preview).sort((a, b) => (a.getHours() * 60 + a.getMinutes()) - (b.getHours() * 60 + b.getMinutes())) : [];
+  $("#sc-times").innerHTML = preview.paused ? `<span>Paused — only Run now starts runs</span>` :
+    times.map(d => `<span>${esc(fmtClock(d))}</span>`).join("") || `<span class="muted">—</span>`;
+
+  const perDay = runsPerDay(preview);
+  const cards = enabledCards();
+  const calls = callsPerRun(cards) * perDay;
+  const mins = Math.ceil(minutesPerRun()) * perDay * 30;
+  $("#sc-calls").innerHTML = `${Math.round(calls).toLocaleString()} <small>of ${EBAY_DAILY.toLocaleString()}</small>`;
+  meter($("#sc-calls-m"), calls / EBAY_DAILY, true);
+  $("#sc-calls-h").textContent = `${plural(perDay, "run")} × ~${callsPerRun(cards).toLocaleString()} calls (${plural(cards.length, "card")} + ETB promos)`;
+  $("#sc-mins").innerHTML = `${Math.round(mins).toLocaleString()} <small>of ${ACTIONS_MONTHLY.toLocaleString()}</small>`;
+  meter($("#sc-mins-m"), mins / ACTIONS_MONTHLY, true);
+  $("#sc-mins-h").textContent = `~${Math.ceil(minutesPerRun())} min a run, rounded up the way GitHub bills it`;
+  $("#sc-window").textContent = every
+    ? `Auctions get reported once they're within ${every + 1} hours of ending (the gap between runs plus an hour, so none close unseen). Saving updates that too.`
+    : "";
+  const over = calls > EBAY_DAILY || mins > ACTIONS_MONTHLY;
+  $("#sc-state").innerHTML = over ? `<span class="bad-t">Over a limit — runs would start failing partway.</span>` : SC.dirty ? "Unsaved changes" : "";
+  $("#sc-save").disabled = !SC.dirty || SC.every == null || !cur.ok;
+}
+$("#sc-every").onclick = e => {
+  const b = e.target.closest("[data-v]"); if (!b) return;
+  const v = +b.dataset.v;
+  if (v && SC.every && v !== SC.every) SC.start = SC.start % Math.min(v, 24);
+  SC.every = v; SC.dirty = true; renderSchedule();
+};
+$("#sc-start").onchange = e => { SC.start = +e.target.value; SC.dirty = true; renderSchedule(); };
+$("#sc-save").onclick = async () => {
+  const btn = $("#sc-save"), every = SC.every, start = SC.start;
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    const desc = every ? (every === 24 ? "once a day" : `every ${every} hours`) : "paused";
+    const r = await saveFile(WORKFLOW_PATH, text => {
+      if (!SCHED_RE.test(text)) throw new Error("The workflow file has no schedule markers.");
+      return text.replace(SCHED_RE, `$1${scheduleBlock(every, start)}$3`);
+    }, `Dashboard: schedule ${desc}`);
+    S.yml = r.text; S.ymlSha = r.sha;
+    if (every) {
+      const s = await saveFile("settings.json", text => {
+        const d = JSON.parse(text || "{}");
+        d.cloud = {...(d.cloud || {}), auction_hours: every + 1};
+        return JSON.stringify(d, null, 2) + "\n";
+      }, `Dashboard: report auctions ending within ${every + 1}h`);
+      S.settings = JSON.parse(s.text); S.settingsSha = s.sha; ST.dirty = false;
+    }
+    SC.dirty = false;
+    toast("Schedule saved", every ? "GitHub can take a few minutes to pick up a new schedule." : "Automatic runs are off until you pick a schedule.", "good");
+  } catch (e) {
+    if (e.status !== 401) toast("Couldn't save the schedule", e.message, "bad");
+  } finally {
+    btn.textContent = "Save schedule"; renderSchedule(); renderNext();
+  }
+};
+
+/* ================================================================== SETTINGS */
+const ST = {dirty: false, form: null};
+function settingsForm() {
+  const s = S.settings || {}, c = s.cloud || {};
+  return {type: c.type || "both", hours: c.auction_hours ?? 5, pct: c.price_pct ?? "", zip: s.ship_to_zip || "",
+          off: new Set(s.exclude_languages || [])};
+}
+function renderSettings() {
+  if (!ST.dirty || !ST.form) ST.form = settingsForm();
+  const f = ST.form;
+  $$("#st-type button").forEach(b => b.classList.toggle("active", b.dataset.v === f.type));
+  if (document.activeElement?.id !== "st-hours") $("#st-hours").value = f.hours;
+  if (document.activeElement?.id !== "st-pct") $("#st-pct").value = f.pct;
+  if (document.activeElement?.id !== "st-zip") $("#st-zip").value = f.zip;
+  $("#st-langs").innerHTML = `<label class="check"><input type="checkbox" checked disabled> English</label>` +
+    LANGS.map(l => `<label class="check"><input type="checkbox" data-lang="${l}" ${f.off.has(l) ? "" : "checked"}> ${l[0].toUpperCase() + l.slice(1)}</label>`).join("");
+  $("#st-save").disabled = !ST.dirty;
+  $("#st-state").textContent = ST.dirty ? "Unsaved changes" : "";
+  $("#st-account").innerHTML = `Signed in to <b>${esc(S.repo)}</b>${DEMO ? " (demo data)" : ""}. The token is saved in this browser only.
+    To use the dashboard on another device, sign in there with the same token.`;
+}
+function stDirty() { ST.dirty = true; renderSettings(); }
+$("#st-type").onclick = e => { const b = e.target.closest("[data-v]"); if (b) { ST.form.type = b.dataset.v; stDirty(); } };
+$("#st-hours").addEventListener("input", e => { ST.form.hours = e.target.value; stDirty(); });
+$("#st-pct").addEventListener("input", e => { ST.form.pct = e.target.value; stDirty(); });
+$("#st-zip").addEventListener("input", e => { ST.form.zip = e.target.value; stDirty(); });
+$("#st-langs").addEventListener("change", e => {
+  const l = e.target.dataset.lang; if (!l) return;
+  if (e.target.checked) ST.form.off.delete(l); else ST.form.off.add(l);
+  stDirty();
+});
+$("#st-save").onclick = async () => {
+  const f = ST.form;
+  if (f.zip && !/^\d{5}$/.test(f.zip.trim())) return toast("ZIP must be 5 digits", "", "bad");
+  const hours = num(f.hours), pct = f.pct === "" ? null : num(f.pct);
+  if (hours == null || hours < 1) return toast("Auction window must be at least 1 hour", "", "bad");
+  if (f.pct !== "" && (pct == null || pct <= 0)) return toast("Price cap must be a positive %", "", "bad");
+  const btn = $("#st-save");
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    const r = await saveFile("settings.json", text => {
+      const d = JSON.parse(text || "{}");
+      d.ship_to_zip = f.zip.trim();
+      d.exclude_languages = LANGS.filter(l => f.off.has(l));
+      d.cloud = {...(d.cloud || {}), auction_hours: hours, price_pct: pct === 100 ? null : pct, type: f.type};
+      return JSON.stringify(d, null, 2) + "\n";
+    }, "Dashboard: update settings");
+    S.settings = JSON.parse(r.text); S.settingsSha = r.sha;
+    ST.dirty = false;
+    toast("Settings saved", "The next run uses them.", "good");
+  } catch (e) {
+    if (e.status !== 401) toast("Couldn't save settings", e.message, "bad");
+  } finally {
+    btn.textContent = "Save settings"; renderSettings(); renderCards();
+  }
+};
+$("#st-signout").onclick = () => { if (confirm("Sign out on this device? You'll need the token to sign back in.")) signOut(); };
+
+/* ================================================================== POLLING */
+let pollTimer = null;
+function schedulePoll(ms) {
+  clearTimeout(pollTimer);
+  const active = S.actions.some(r => r.status !== "completed");
+  pollTimer = setTimeout(pollTick, ms ?? (document.hidden ? 120000 : active ? 6000 : 60000));
+}
+async function pollTick(manual) {
+  try {
+    const finished = await loadActions();
+    const sel = S.actions.find(r => r.id === S.selectedRun);
+    const active = S.actions.filter(r => r.status !== "completed");
+    await Promise.all([...new Set([sel, ...active].filter(Boolean))].map(loadJobs));
+    if (finished.length) {
+      await loadResults();
+      RS.key = null;
+      for (const r of finished) {
+        const res = resultFor(r);
+        if (r.conclusion === "success") toast("Run finished", res ? `${res.stamped ? res.stamped + " stamped · " : ""}${plural(res.matches, "match", "matches")}` : "", "good");
+        else toast("Run " + (r.conclusion || "ended"), "Open it on the Run tab for details.", r.conclusion === "cancelled" ? "warn" : "bad");
+      }
+      renderQuota();
+      if (S.view === "results") renderResults();
+    }
+    if (manual === true) toast("Up to date");
+  } catch (e) {
+    if (e.status === 401) return;
+    if (manual === true) toast("Couldn't refresh", e.message, "bad");
+  }
+  if (S.view === "run") renderRun(); else renderRunBadge();
+  schedulePoll();
+}
+function renderRunBadge() {
+  const running = S.actions.filter(r => r.status !== "completed").length;
+  $("#nav-running").classList.toggle("hidden", !running); $("#nav-running").textContent = running;
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && S.token) schedulePoll(300); });
+setInterval(() => { if (S.view === "run" && S.actions.some(r => r.status !== "completed")) renderRunDetail(); }, 1000);
+
+/* ================================================================== SIGN IN */
+function showSignin(err) {
+  $("#signin").classList.remove("hidden");
+  $("#hdr").classList.add("hidden"); $("#app").classList.add("hidden");
+  $("#si-error").classList.toggle("hidden", !err);
+  $("#si-error").textContent = err || "";
+  $("#si-repo").value = store.get("repo", "giraffeo182/PokeSniper");
+  setTimeout(() => $("#si-token").focus(), 50);
+}
+function signOut(reason) {
+  store.del("token"); S.token = "";
+  clearTimeout(pollTimer);
+  showSignin(reason);
+}
+async function signIn(token, repo) {
+  S.token = token.trim(); S.repo = repo.trim().replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "").replace(/\/$/, "");
+  const r = await gh(repoPath(""));
+  if (!r.permissions?.push) throw new GhError("This token can read the repo but not change it. Give it Contents, Actions and Workflows: Read and write.", 403);
+  if (!r.private && !DEMO) toast("Heads up: this repo is public", "Anyone can see its cards and results.", "warn");
+  store.set("token", S.token); store.set("repo", S.repo);
+}
+$("#si-go").onclick = async () => {
+  const token = $("#si-token").value, repo = $("#si-repo").value;
+  if (!token.trim()) return showSignin("Paste your token first.");
+  const btn = $("#si-go");
+  btn.disabled = true; btn.textContent = "Checking…";
+  try { await signIn(token, repo); $("#si-token").value = ""; await start(); }
+  catch (e) {
+    showSignin(e.status === 404 ? `Can't see ${S.repo}. Check the name, and that the token has access to that repo.` :
+               e.status === 401 ? "GitHub didn't accept that token. Copy it again — it starts with github_pat_." : e.message);
+  } finally { btn.disabled = false; btn.textContent = "Sign in"; }
+};
+$("#si-token").addEventListener("keydown", e => { if (e.key === "Enter") $("#si-go").click(); });
+
+async function start() {
+  $("#signin").classList.add("hidden");
+  $("#hdr").classList.remove("hidden"); $("#app").classList.remove("hidden");
+  patch($("#run-status"), `<span class="muted">Loading from GitHub…</span>`);
+  const [cfg, acts, res] = await Promise.allSettled([loadConfig(), loadActions(), loadResults()]);
+  for (const x of [cfg, acts, res]) if (x.status === "rejected" && x.reason?.status !== 401) toast("Couldn't load everything", x.reason?.message || String(x.reason), "bad");
+  if (cfg.status === "rejected" && cfg.reason?.status === 401) return;
+  renderVersion(); renderQuota(); renderChips();
+  show(store.get("view", "run"));
+  const sel = S.actions.find(r => r.status !== "completed") || S.actions[0];
+  if (sel) { S.selectedRun = sel.id; await loadJobs(sel); if (S.view === "run") renderRunDetail(); }
+  schedulePoll();
+}
+
+(async function boot() {
+  if (DEMO) {
+    await new Promise((ok, fail) => { const s = document.createElement("script"); s.src = "demo.js"; s.onload = ok; s.onerror = fail; document.head.appendChild(s); });
+    await window.PS_DEMO.ready;
+    S.token = "demo"; S.repo = "demo/PokeSniper";
+    return start();
+  }
+  const token = store.get("token", "");
+  if (!token) return showSignin();
+  try { await signIn(token, store.get("repo", "giraffeo182/PokeSniper")); await start(); }
+  catch (e) { if (e.status !== 401) showSignin(e.message); }
+})();
