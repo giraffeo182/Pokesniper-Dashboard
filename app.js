@@ -878,8 +878,10 @@ window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty |
 /* ================================================================== CATALOG */
 // catalog/ on main, built by catalog.py: eras -> sets -> every card, from
 // Sword & Shield through Mega Evolution. Loaded on first visit to Cards.
-// market: the catalog's price per key, for cards added since the last run
-const CAT = {sets: null, bySlug: new Map(), data: new Map(), all: null, error: "", market: new Map()};
+// market: the catalog's price per key, for cards added since the last run.
+// today: every catalog card's price from today, by TCGplayer product id
+// (catalog_prices.json on the results branch, refreshed daily by the runs)
+const CAT = {sets: null, bySlug: new Map(), data: new Map(), all: null, error: "", market: new Map(), today: {}, todayAt: null};
 const CS = {mode: "sets", slug: null, q: "", gq: "", rarity: "", status: "", variants: false, sort: "number", shown: []};
 Object.assign(CS, store.get("catalogView", {}), {q: "", gq: "", slug: null, shown: []});
 const saveCatalogView = () => store.set("catalogView", {mode: CS.mode === "set" ? "sets" : CS.mode, variants: CS.variants, sort: CS.sort});
@@ -890,7 +892,10 @@ async function loadCatalog() {
   if (CAT.sets || CAT.loading) return;
   CAT.loading = true;
   try {
-    CAT.sets = JSON.parse(await getRaw("catalog/sets.json", "main"));
+    const [sets, today] = await Promise.all([getRaw("catalog/sets.json", "main"),
+      getRaw("catalog_prices.json", "results").then(JSON.parse).catch(() => null)]);
+    CAT.sets = JSON.parse(sets);
+    if (today && today.prices) { CAT.today = today.prices; CAT.todayAt = today.updated; }
     for (const era of CAT.sets.eras || []) for (const st of era.sets) CAT.bySlug.set(st.slug, {...st, era: era.name});
     // prices for cards added since the last run live in their set's file
     const table = S.prices?.cards || {};
@@ -904,7 +909,13 @@ async function loadCatalog() {
 }
 async function loadSet(slug) {
   if (!CAT.data.has(slug)) CAT.data.set(slug, getRaw(`catalog/sets/${slug}.json`, "main").then(JSON.parse)
-    .then(d => { for (const c of d.cards) if (c.market != null) CAT.market.set(c.key, c.market); return d; })
+    .then(d => {
+      for (const c of d.cards) {
+        c.market = CAT.today[c.id] ?? c.market;
+        if (c.market != null) CAT.market.set(c.key, c.market);
+      }
+      return d;
+    })
     .catch(e => { CAT.data.delete(slug); throw e; }));
   return CAT.data.get(slug);
 }
@@ -978,7 +989,9 @@ function renderSetTiles() {
   const counts = new Map();
   for (const c of cardRows()) if (c.enabled) { const sl = setOfKey(c.key); counts.set(sl, (counts.get(sl) || 0) + 1); }
   const nSets = eras.reduce((n, e) => n + e.sets.length, 0);
-  $("#cs-summary").textContent = `${(CAT.sets.cards || 0).toLocaleString()} cards in ${nSets} sets`;
+  const at = CAT.todayAt || CAT.sets.updated;
+  $("#cs-summary").textContent = `${(CAT.sets.cards || 0).toLocaleString()} cards in ${nSets} sets` +
+    (at ? ` · prices from ${fmtDay(new Date(at))}` : "");
   patch($("#cs-sets"), eras.map(era => `<div class="era"><h3>${esc(era.name)}</h3><div class="sgrid">${era.sets.map(st => {
     const n = counts.get(st.slug) || 0;
     const logo = st.logo ? `<img src="${esc(safeUrl(st.logo))}" alt="" loading="lazy">` : `<span class="code">${esc(st.code)}</span>`;
