@@ -556,10 +556,10 @@ input::placeholder { color: var(--faint); }
                 </div>
               </div>
               <div class="row">
+                <div class="field"><label for="rn-new">Buy It Now listed within</label>
+                  <div class="suffix"><input type="number" id="rn-new" min="0" step="1" placeholder="usual"> hrs</div></div>
                 <div class="field"><label for="rn-hours">Auctions ending within</label>
                   <div class="suffix"><input type="number" id="rn-hours" min="0" step="1" placeholder="usual"> hrs</div></div>
-                <div class="field"><label for="rn-new">Newly listed only</label>
-                  <div class="suffix"><input type="number" id="rn-new" min="1" step="1" placeholder="off"> hrs</div></div>
               </div>
               <div class="row">
                 <div class="field"><label for="rn-pct">Price cap, % of market</label>
@@ -567,7 +567,7 @@ input::placeholder { color: var(--faint); }
                 <div class="field"><span class="field-label">&nbsp;</span>
                   <label class="check" title="Ignores the seen list: everything that matches is reported again"><input type="checkbox" id="rn-all"> Re-check seen</label></div>
               </div>
-              <div class="hint">Blank means the usual options from the Settings tab.</div>
+              <div class="hint">Blank means the usual options from the Settings tab; 0 hrs means no limit. Each time filter only applies to its own listing type, and an auction with Buy It Now counts if it passes either.</div>
             </div>
           </details>
         </div>
@@ -808,13 +808,20 @@ input::placeholder { color: var(--faint); }
           </div>
         </div>
         <div class="row">
+          <div class="field"><label for="st-new">Buy It Now listed within</label>
+            <div class="suffix"><input type="number" id="st-new" min="1" step="1" placeholder="any"> hrs</div>
+            <span class="hint">Blank = any age. Keep it over the gap between runs, or a listing can slip through between two runs. With auctions on too, each search runs twice, so twice the eBay calls.</span></div>
           <div class="field"><label for="st-hours">Auctions ending within</label>
             <div class="suffix"><input type="number" id="st-hours" min="1" step="1"> hrs</div>
             <span class="hint">Kept just over the gap between runs, so none close unseen. Changing the schedule updates it.</span></div>
+        </div>
+        <div class="row">
           <div class="field"><label for="st-pct">Price cap, % of market</label>
             <div class="suffix"><input type="number" id="st-pct" min="1" max="500" step="5" placeholder="100"> %</div>
             <span class="hint">80 = only listings at 80% of market or less, shipping included.</span></div>
+          <div></div>
         </div>
+        <p class="hint">Each time filter only applies to its own listing type. An auction with Buy It Now counts if it passes either.</p>
       </div>
       <div class="card">
         <h2>ETB Scanner</h2>

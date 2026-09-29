@@ -234,7 +234,12 @@ function cardRows(pendingAware = true) {
 }
 const tcgImg = (id, size = "200w") => id ? `https://tcgplayer-cdn.tcgplayer.com/product/${id}_${size}.jpg` : "";
 const enabledCards = () => cardRows(false).filter(c => c.enabled);
-const callsPerRun = (cards, etb = true) => cards.reduce((n, c) => n + c.queries, 0) + (etb ? etbCalls() : 0);
+// Buy It Now listed-within + auctions: card_hunter searches each query
+// twice, newest-first and soonest-ending. Default: the scheduled runs' options.
+const splitSearch = (type, newHours) => (type || "both") === "both" && num(newHours) > 0;
+const cloudSplit = () => splitSearch(S.settings?.cloud?.type, S.settings?.cloud?.new_hours);
+const callsPerRun = (cards, etb = true, split = cloudSplit()) =>
+  cards.reduce((n, c) => n + c.queries, 0) * (split ? 2 : 1) + (etb ? etbCalls() : 0);
 
 /* Average billed minutes of recent successful runs, else a guess from card count */
 function minutesPerRun() {
@@ -317,15 +322,19 @@ function runArgs() {
 function renderRunCost() {
   const etb = $("#rn-etb").checked, hunter = $("#rn-hunter").checked;
   const cards = RN.cards.length ? cardRows(false).filter(c => RN.cards.includes(c.key)) : enabledCards();
-  const calls = (hunter ? callsPerRun(cards, false) : 0) + (etb ? etbCalls() : 0);
+  const fresh = $("#rn-new").value.trim();
+  const split = splitSearch(RN.type || S.settings?.cloud?.type, fresh !== "" ? fresh : S.settings?.cloud?.new_hours);
+  const calls = (hunter ? callsPerRun(cards, false, split) : 0) + (etb ? etbCalls() : 0);
   $("#rn-cost").textContent = etb || hunter ? `≈ ${calls.toLocaleString()} eBay calls` : "Nothing selected";
   $("#rn-go").disabled = !(etb || hunter);
 }
 ["rn-etb", "rn-hunter", "rn-email"].forEach(id => $("#" + id).addEventListener("change", renderRunCost));
+$("#rn-new").addEventListener("input", renderRunCost);
 $("#rn-type").onclick = e => {
   const b = e.target.closest("[data-v]"); if (!b) return;
   RN.type = b.dataset.v;
   $$("#rn-type button").forEach(x => x.classList.toggle("active", x === b));
+  renderRunCost();
 };
 
 // card picker
@@ -1445,7 +1454,7 @@ $("#sc-save").onclick = async () => {
 const ST = {dirty: false, form: null};
 function settingsForm() {
   const s = S.settings || {}, c = s.cloud || {};
-  return {type: c.type || "both", hours: c.auction_hours ?? 5, pct: c.price_pct ?? "", zip: s.ship_to_zip || "",
+  return {type: c.type || "both", hours: c.auction_hours ?? 5, newh: c.new_hours ?? "", pct: c.price_pct ?? "", zip: s.ship_to_zip || "",
           off: new Set(s.exclude_languages || []), etbOff: new Set(s.etb_off || [])};
 }
 function renderSettings() {
@@ -1453,6 +1462,9 @@ function renderSettings() {
   const f = ST.form;
   $$("#st-type button").forEach(b => b.classList.toggle("active", b.dataset.v === f.type));
   if (document.activeElement?.id !== "st-hours") $("#st-hours").value = f.hours;
+  if (document.activeElement?.id !== "st-new") $("#st-new").value = f.newh;
+  $("#st-new").disabled = f.type === "auction";
+  $("#st-hours").disabled = f.type === "buy-now";
   if (document.activeElement?.id !== "st-pct") $("#st-pct").value = f.pct;
   if (document.activeElement?.id !== "st-zip") $("#st-zip").value = f.zip;
   $("#st-langs").innerHTML = `<label class="check"><input type="checkbox" checked disabled> English</label>` +
@@ -1495,6 +1507,7 @@ $("#etb-all").onclick = () => { ST.form.etbOff.clear(); stDirty(); };
 $("#etb-none").onclick = () => { ST.form.etbOff = new Set(S.promos.map(p => p.key)); stDirty(); };
 $("#st-type").onclick = e => { const b = e.target.closest("[data-v]"); if (b) { ST.form.type = b.dataset.v; stDirty(); } };
 $("#st-hours").addEventListener("input", e => { ST.form.hours = e.target.value; stDirty(); });
+$("#st-new").addEventListener("input", e => { ST.form.newh = e.target.value; stDirty(); });
 $("#st-pct").addEventListener("input", e => { ST.form.pct = e.target.value; stDirty(); });
 $("#st-zip").addEventListener("input", e => { ST.form.zip = e.target.value; stDirty(); });
 $("#st-langs").addEventListener("change", e => {
@@ -1506,7 +1519,9 @@ $("#st-save").onclick = async () => {
   const f = ST.form;
   if (f.zip && !/^\d{5}$/.test(f.zip.trim())) return toast("ZIP must be 5 digits", "", "bad");
   const hours = num(f.hours), pct = f.pct === "" ? null : num(f.pct);
+  const newh = String(f.newh).trim() === "" ? null : num(f.newh);
   if (hours == null || hours < 1) return toast("Auction window must be at least 1 hour", "", "bad");
+  if (newh != null && !(newh >= 1)) return toast("Buy It Now window must be at least 1 hour, or blank for any age", "", "bad");
   if (f.pct !== "" && (pct == null || pct <= 0)) return toast("Price cap must be a positive %", "", "bad");
   const btn = $("#st-save");
   btn.disabled = true; btn.textContent = "Saving…";
@@ -1516,7 +1531,7 @@ $("#st-save").onclick = async () => {
       d.ship_to_zip = f.zip.trim();
       d.exclude_languages = LANGS.filter(l => f.off.has(l));
       if (S.promos.length) d.etb_off = S.promos.map(p => p.key).filter(k => f.etbOff.has(k));
-      d.cloud = {...(d.cloud || {}), auction_hours: hours, price_pct: pct === 100 ? null : pct, type: f.type};
+      d.cloud = {...(d.cloud || {}), auction_hours: hours, new_hours: newh, price_pct: pct === 100 ? null : pct, type: f.type};
       return JSON.stringify(d, null, 2) + "\n";
     }, "Dashboard: update settings");
     S.settings = JSON.parse(r.text); S.settingsSha = r.sha;
