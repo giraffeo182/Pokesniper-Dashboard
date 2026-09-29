@@ -1057,8 +1057,12 @@ $("#c-off").onclick = () => {
   setEnabled(keys, false);
 };
 $("#c-discard").onclick = () => { Cd.pending.clear(); Cd.adds.clear(); renderCards(); };
-$("#c-save").onclick = async () => {
-  const changes = new Map(Cd.pending), btn = $("#c-save");
+$("#c-save").onclick = () => saveCards([...Cd.pending.keys()]);
+// Saves the pending changes to these cards (all of them from the Save
+// button, a preset's from its tick) and leaves any others pending.
+async function saveCards(keys) {
+  const changes = new Map(keys.filter(k => Cd.pending.has(k)).map(k => [k, Cd.pending.get(k)])), btn = $("#c-save");
+  if (!changes.size) return renderCards();
   const adds = [...Cd.adds.values()].filter(c => changes.get(c.key));
   const added = adds.length, on = [...changes.values()].filter(Boolean).length - added, off = changes.size - added - on;
   const msg = "Dashboard: " + [added && `add ${plural(added, "card")}`, on && `turn on ${plural(on, "card")}`,
@@ -1081,7 +1085,7 @@ $("#c-save").onclick = async () => {
       return JSON.stringify(cfg, null, 2) + "\n";
     }, msg);
     S.cfg = JSON.parse(r.text); S.cfgSha = r.sha;
-    Cd.pending.clear(); Cd.adds.clear();
+    for (const k of changes.keys()) { Cd.pending.delete(k); Cd.adds.delete(k); }
     toast("Saved", "The next run uses these cards.", "good");
   } catch (e) {
     if (e.status !== 401) toast("Couldn't save", e.message, "bad");
@@ -1089,13 +1093,14 @@ $("#c-save").onclick = async () => {
     btn.disabled = false; btn.textContent = "Save";
     renderCards(); renderChips();
   }
-};
+}
 window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty || ST.dirty || SV.timer) { e.preventDefault(); e.returnValue = ""; } });
 
 /* ------------------------------------------------------------------ presets */
 // Named groups of cards, kept in cards.json as "presets"; the PC dashboard
-// has the same code. Ticking one changes its cards like any other tick
-// (Save sends them); making, editing or deleting one saves straight away.
+// has the same code. Ticking one saves its cards straight away, as on the
+// PC: left for the Save button, a phone closed without it lost them all,
+// and the tick looked done. Making, editing or deleting one saves too.
 const presetList = () => S.cfg?.presets || [];
 const presetCards = () => cardRows();
 async function catalogReady() {
@@ -1211,12 +1216,16 @@ function renderPresets() {
 function togglePreset(i, want) {
   const list = presetList(), on = cardsOn();
   const s = presetState(list[i], on);
-  if (want) return turnCards(s.keys.filter(k => !on.get(k)), true);
+  if (want) {
+    const keys = s.keys.filter(k => !on.get(k));
+    return turnCards(keys, true).then(() => saveCards(keys));
+  }
   const keep = new Set();
   list.forEach((q, j) => { if (j !== i) { const t = presetState(q, on); if (t.full) t.keys.forEach(k => keep.add(k)); } });
   const kept = s.keys.filter(k => on.get(k) && keep.has(k)).length;
   if (kept) toast(`${kept} card${kept === 1 ? "" : "s"} kept on`, "They're also in another preset that's ticked.");
-  turnCards(s.keys.filter(k => on.get(k) && !keep.has(k)), false);
+  const keys = s.keys.filter(k => on.get(k) && !keep.has(k));
+  return turnCards(keys, false).then(() => saveCards(keys));
 }
 function startPreset(i) {
   const p = presetList()[i];
