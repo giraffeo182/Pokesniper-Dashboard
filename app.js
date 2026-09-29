@@ -7,7 +7,7 @@
  *     branch (written by publish_results.py after every run)
  *   - Cards / Settings / Schedule: edit cards.json, settings.json and the
  *     workflow's schedule, each saved as a commit on `main`. Cards also
- *     browses catalog/ (every set from Sword & Shield on, built by
+ *     browses catalog/ (every set from Base Set on, built by
  *     catalog.py) by set or by Pokemon, and ticking a card there adds it
  *     to cards.json
  */
@@ -900,11 +900,11 @@ window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty |
 
 /* ================================================================== CATALOG */
 // catalog/ on main, built by catalog.py: eras -> sets -> every card, from
-// Sword & Shield through Mega Evolution. Loaded on first visit to Cards.
+// Base Set through Mega Evolution. Loaded on first visit to Cards.
 // market: the catalog's price per key, for cards added since the last run.
 // today: every catalog card's price from today, by TCGplayer product id
 // (catalog_prices.json on the results branch, refreshed daily by the runs)
-const CAT = {sets: null, bySlug: new Map(), data: new Map(), all: null, allDone: null, error: "", market: new Map(), today: {}, todayAt: null};
+const CAT = {sets: null, bySlug: new Map(), data: new Map(), ready: new Map(), all: null, allDone: null, error: "", market: new Map(), today: {}, todayAt: null};
 // modes: sets (every set) -> set (one), dex (every Pokemon) -> mon (one), mine
 const CS = {mode: "sets", slug: null, dex: null, q: "", gq: "", dq: "", gen: 0, rarity: "", status: "", variants: false, sort: "number", monSort: "number", shown: []};
 Object.assign(CS, store.get("catalogView", {}), {q: "", gq: "", dq: "", slug: null, dex: null, shown: []});
@@ -938,24 +938,24 @@ async function loadSet(slug) {
         c.market = CAT.today[c.id] ?? c.market;
         if (c.market != null) CAT.market.set(c.key, c.market);
       }
+      CAT.ready.set(slug, d);
       return d;
     })
     .catch(e => { CAT.data.delete(slug); throw e; }));
   return CAT.data.get(slug);
 }
+// a few at a time: 150 files at once is rude to GitHub and slow on a phone
+async function loadSets(slugs) {
+  const out = new Array(slugs.length);
+  let next = 0;
+  await Promise.all(Array.from({length: 6}, async () => {
+    while (next < slugs.length) { const i = next++; out[i] = await loadSet(slugs[i]).catch(() => null); }
+  }));
+  return out;
+}
 async function loadAllSets() {
   if (!CAT.bySlug.size) return [];                     // sets.json not loaded yet
-  if (!CAT.all) {
-    // a few at a time: 46 files at once is rude to GitHub and slow on a phone
-    const slugs = [...CAT.bySlug.keys()], out = new Array(slugs.length);
-    CAT.all = (async () => {
-      let next = 0;
-      await Promise.all(Array.from({length: 6}, async () => {
-        while (next < slugs.length) { const i = next++; out[i] = await loadSet(slugs[i]).catch(() => null); }
-      }));
-      return (CAT.allDone = out);
-    })();
-  }
+  if (!CAT.all) CAT.all = loadSets([...CAT.bySlug.keys()]).then(out => (CAT.allDone = out));
   return CAT.all;
 }
 // The set a cards.json key belongs to: the longest slug it ends with, since
@@ -1050,11 +1050,14 @@ function loadPokemon() {
   }).catch(e => { DEX.loading = null; throw e; });
   return DEX.loading;
 }
-// Dex number -> cards being hunted, once every set is loaded (null till then)
+// Dex number -> cards being hunted, once the sets they're in are loaded
+// (null till then). Only those sets: every set is 150 files.
+const huntSlugs = () => [...new Set(cardRows().map(c => setOfKey(c.key)).filter(Boolean))];
 function huntingByDex() {
-  if (!CAT.allDone) return null;
+  const slugs = huntSlugs();
+  if (!slugs.every(s => CAT.ready.has(s))) return null;
   const m = mine(), out = new Map();
-  for (const d of CAT.allDone) if (d) for (const c of d.cards) {
+  for (const d of slugs.map(s => CAT.ready.get(s))) for (const c of d.cards) {
     if (!c.dex) continue;
     const r = rowFor(c, m);
     if (r && r.enabled) for (const n of c.dex) out.set(n, (out.get(n) || 0) + 1);
@@ -1076,11 +1079,14 @@ async function renderDexTiles() {
   }
   const gens = DEX.data.generations || [];
   const hunting = huntingByDex();
-  if (!hunting && CAT.bySlug.size) loadAllSets().then(() => CS.mode === "dex" && renderDexTiles());
+  if (!hunting && CAT.bySlug.size && !DEX.huntLoading) {
+    DEX.huntLoading = true;                          // once: a set that won't load mustn't loop
+    loadSets(huntSlugs()).then(() => CS.mode === "dex" && renderDexTiles());
+  }
   if (!gens.some(g => g.gen === CS.gen)) CS.gen = 0;
   patch($("#cs-gens"), [[0, "All"], ...gens.map(g => [g.gen, ROMAN[g.gen] || g.gen])].map(([v, t]) =>
     `<button data-gen="${v}" class="${CS.gen === v ? "active" : ""}" title="${v ? esc(genName(gens.find(g => g.gen === v))) : "Every generation"}">${t}</button>`).join(""));
-  $("#cs-dsummary").textContent = `${(DEX.data.count || 0).toLocaleString()} Pokémon · ${(DEX.data.with_cards || 0).toLocaleString()} have cards from Sword & Shield on`;
+  $("#cs-dsummary").textContent = `${(DEX.data.count || 0).toLocaleString()} Pokémon · ${(DEX.data.with_cards || 0).toLocaleString()} have cards`;
   const q = foldName(CS.dq.trim().replace(/^#/, ""));
   const isNum = /^\d+$/.test(q);
   const match = p => !q || (isNum ? String(p.dex).startsWith(String(+q)) : foldName(p.name).includes(q));
@@ -1088,7 +1094,7 @@ async function renderDexTiles() {
     const list = g.pokemon.filter(match);
     return list.length ? `<div class="era"><h3>${esc(genName(g))}</h3><div class="pgrid">${list.map(p => {
       const n = hunting ? hunting.get(p.dex) || 0 : 0;
-      const title = p.cards ? `${p.name}: ${plural(p.cards, "card")}` : `No ${p.name} cards from Sword & Shield on`;
+      const title = p.cards ? `${p.name}: ${plural(p.cards, "card")}` : `No ${p.name} cards yet`;
       return `<button class="ptile ${p.cards ? "" : "none"}" data-dex="${p.dex}" title="${esc(title)}">
         <div class="psprite"><img src="${sprite(p.dex)}" alt="" loading="lazy"></div>
         <div class="pnum">${dexNo(p.dex)}</div><div class="pname">${esc(p.name)}</div>
@@ -1098,9 +1104,16 @@ async function renderDexTiles() {
 }
 
 // every card with this Pokemon on it, oldest first: by its set's release
-// date, or its own for promos (catalog.py estimates those from the number)
+// date, or its own for promos (catalog.py estimates those from the number).
+// pokemon.json says which sets it's in, so only those are loaded.
+function monSlugs(p) {
+  const all = [...CAT.bySlug.keys()];
+  if (!p.in || !DEX.data.sets) return all;
+  const want = new Set(p.in.map(i => DEX.data.sets[i]));
+  return all.filter(s => want.has(s));                // sets.json's order: newest first
+}
 async function monCards(p) {
-  const sets = await loadAllSets();
+  const sets = await loadSets(monSlugs(p));
   const out = [];
   for (const d of [...sets].reverse()) {
     if (!d) continue;
@@ -1124,7 +1137,7 @@ async function renderSetCards() {
     if (!p) { CS.mode = "dex"; return renderCatalog(); }
     $("#cs-title").innerHTML = `<img class="mon" src="${artwork(p.dex)}" alt="">` +
       `<div><b>${esc(p.name)}</b><div class="hint">${dexNo(p.dex)} · ${esc(genName(p))} · ${plural(p.cards, "card")}</div></div>`;
-    if (!CAT.allDone) { $("#cs-cards").innerHTML = `<div class="empty">Loading every ${esc(p.name)} card…</div>`; $("#cs-cards")._html = null; }
+    if (!monSlugs(p).every(s => CAT.ready.has(s))) { $("#cs-cards").innerHTML = `<div class="empty">Loading every ${esc(p.name)} card…</div>`; $("#cs-cards")._html = null; }
     cards = await monCards(p);
     if (CS.mode !== "mon" || CS.dex !== p.dex) return;
   } else {
@@ -1187,7 +1200,7 @@ async function renderSetCards() {
       <div class="meta"><span>${esc(c.number)}</span><span class="rar">${esc(c.rarity)}</span><span class="mk">${money(c.market)}</span></div>
       ${c.variant ? `<div class="var">${esc(c.variant)}</div>` : ""}
       ${global || mon ? `<div class="from">${esc(c._set)}</div>` : ""}</button>`;
-  }).join("") || `<div class="empty">${mon && !cards.length ? "No cards of this Pokémon from Sword & Shield on." : "No cards match."}</div>`);
+  }).join("") || `<div class="empty">${mon && !cards.length ? "No cards of this Pokémon yet." : "No cards match."}</div>`);
 }
 
 // Tick or untick catalog cards: ones already in cards.json flip like the
