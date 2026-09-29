@@ -1029,15 +1029,21 @@ function renderSetTiles() {
   const at = CAT.todayAt || CAT.sets.updated;
   $("#cs-summary").textContent = `${(CAT.sets.cards || 0).toLocaleString()} cards in ${nSets} sets` +
     (at ? ` · prices from ${fmtDay(new Date(at))}` : "");
-  patch($("#cs-sets"), eras.map(era => `<div class="era"><h3>${esc(era.name)}</h3><div class="sgrid">${era.sets.map(st => {
+  const tile = st => {
     const n = counts.get(st.slug) || 0;
-    const logo = st.logo ? `<img src="${esc(safeUrl(st.logo))}" alt="" loading="lazy">` : `<span class="code">${esc(st.code)}</span>`;
     return `<button class="stile" data-slug="${esc(st.slug)}">
-      <div class="slogo">${logo}</div>
+      ${st.logo ? `<div class="slogo"><img src="${esc(safeUrl(st.logo))}" alt="" loading="lazy"></div>` : ""}
       <div class="sinfo"><div class="sname">${esc(st.name)}</div><div class="sdate">${esc(fmtRelease(st.date))}</div>
         <div class="sfoot"><span>${plural(st.count, "card")}</span>${n ? `<span class="hunting">${n} hunting</span>` : ""}
           ${st.code ? `<span class="code">${esc(st.code)}</span>` : ""}</div></div></button>`;
-  }).join("")}</div></div>`).join(""));
+  };
+  // sets with a logo by era; the ones without (McDonald's, trainer kits,
+  // reprint groups) together at the bottom, still by era
+  const main = eras.map(era => [era, era.sets.filter(st => st.logo)]).filter(([, sets]) => sets.length);
+  const more = eras.map(era => [era, era.sets.filter(st => !st.logo)]).filter(([, sets]) => sets.length);
+  patch($("#cs-sets"), main.map(([era, sets]) => `<div class="era"><h3>${esc(era.name)}</h3><div class="sgrid">${sets.map(tile).join("")}</div></div>`).join("") +
+    (more.length ? `<div class="era more"><h3>More sets<span class="hint">promos, trainer kits and reprints</span></h3>${more.map(([era, sets]) =>
+      `<h4>${esc(era.name)}</h4><div class="sgrid bare">${sets.map(tile).join("")}</div>`).join("")}</div>` : ""));
 }
 
 /* ------------------------------------------------------------------ pokemon: generations -> pokemon -> cards */
