@@ -397,11 +397,12 @@ function shared() {
   if (SV.want) return SV.want;
   const s = S.settings || {};
   return {zip: s.ship_to_zip || "", off: new Set(s.exclude_languages || []), condOff: new Set(s.exclude_conditions || []),
+          graded: {include_graded: s.include_graded === true, etb_include_graded: s.etb_include_graded === true},
           etbOff: new Set(s.etb_off || [])};
 }
 function changeShared(fn, note) {
   const w = shared();
-  SV.want = {zip: w.zip, off: new Set(w.off), condOff: new Set(w.condOff), etbOff: new Set(w.etbOff)};
+  SV.want = {zip: w.zip, off: new Set(w.off), condOff: new Set(w.condOff), graded: {...w.graded}, etbOff: new Set(w.etbOff)};
   fn(SV.want);
   SV.note = SV.note && SV.note !== note ? "run settings" : note;
   clearTimeout(SV.timer);
@@ -419,6 +420,8 @@ async function flushShared() {
       d.ship_to_zip = w.zip;
       d.exclude_languages = LANGS.filter(l => w.off.has(l));
       d.exclude_conditions = CONDS.map(([c]) => c).filter(c => w.condOff.has(c));
+      d.include_graded = w.graded.include_graded;
+      d.etb_include_graded = w.graded.etb_include_graded;
       if (S.promos.length) d.etb_off = S.promos.map(p => p.key).filter(k => w.etbOff.has(k));
       return JSON.stringify(d, null, 2) + "\n";
     }, `Dashboard: ${note}`);
@@ -445,6 +448,8 @@ function renderRunShared() {
     `<label class="dd-item"><input type="checkbox" data-cond="${c}" ${w.condOff.has(c) ? "" : "checked"}> ${name}<span class="num">${c}</span></label>`).join(""));
   const condsOn = CONDS.map(([c]) => c).filter(c => !w.condOff.has(c));
   $("#cond-dd-label").textContent = condsOn.length === CONDS.length ? "All conditions" : condsOn.length ? condsOn.join(", ") : "None: every listing is dropped";
+  // graded slabs: one tick per tool, left out unless ticked
+  $$("[data-graded]").forEach(b => b.checked = w.graded[b.dataset.graded]);
   $("#cond-dd-btn").classList.toggle("none", !condsOn.length);
   const at = S.prices?.updated ? new Date(S.prices.updated) : null;
   $("#rn-prices-age").textContent = at && !isNaN(at)
@@ -465,6 +470,11 @@ $("#rn-conds").addEventListener("change", e => {
   const c = e.target.dataset.cond; if (!c) return;
   changeShared(w => { if (e.target.checked) w.condOff.delete(c); else w.condOff.add(c); }, "conditions");
 });
+$$("[data-graded]").forEach(b => b.addEventListener("change", e => {
+  const key = e.target.dataset.graded, tool = key === "include_graded" ? "Card Hunter" : "ETB Scanner";
+  changeShared(w => { w.graded[key] = e.target.checked; },
+    `${tool}: ${e.target.checked ? "include" : "leave out"} graded slabs`);
+}));
 for (const id of ["lang", "cond"]) $(`#${id}-dd-btn`).onclick = () => {
   const open = $(`#${id}-dd-panel`).classList.toggle("hidden") === false;
   $(`#${id}-dd-btn`).setAttribute("aria-expanded", open);
@@ -769,6 +779,8 @@ function normalize(kind, r, runId) {
     seller: it.seller?.username, feedback: it.seller?.feedbackPercentage, condition: it.condition,
     // the card condition Card Hunter priced it by (NM ... DMG), when it read one
     cond: kind === "hunt" ? r.condition || null : null,
+    // "PSA 9" for a graded slab, which has no market price to compare
+    grade: kind === "hunt" ? r.grade || null : null,
   };
 }
 const FILTERS = [
@@ -847,6 +859,8 @@ function priceBits(x) {
     mk = `${COND_NAMES[x.cond] ? COND_NAMES[x.cond] + " market" : "Market"} ${money(x.market)}` +
       (x.pct != null ? ` · ${x.pct}%${x.shipKnown ? "" : "+"} of market` : "");
     cls = x.pct == null ? "" : x.pct <= 60 ? "deal" : x.pct <= 90 ? "good" : x.pct > 100 ? "over" : "";
+  } else if (x.grade) {
+    mk = `${x.grade} slab · no graded price`;
   }
   return {head, sub, mk, cls};
 }

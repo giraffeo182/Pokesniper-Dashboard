@@ -614,7 +614,10 @@ input::placeholder { color: var(--faint); }
               <div class="dd-list" id="etb-dd-list"></div>
             </div>
           </div>
-          <span class="hint">Which promos to search, saved for every run. Each one is an eBay call per run.</span>
+          <div class="checks">
+            <label class="check" title="Graded slabs (PSA, BGS, CGC…) are left out unless this is ticked. Saved for every run."><input type="checkbox" data-graded="etb_include_graded"> Include graded slabs</label>
+          </div>
+          <span class="hint">Which promos to search, and whether to include graded slabs, saved for every run. Each promo is an eBay call per run.</span>
         </div>
         <div class="tool-foot"><span class="cost" id="rn-etb-cost"></span></div>
       </div>
@@ -699,8 +702,9 @@ input::placeholder { color: var(--faint); }
           </div>
           <div class="checks">
             <label class="check" title="Ignores the seen list: everything that matches is reported again"><input type="checkbox" id="rn-all"> Re-check seen</label>
+            <label class="check" title="Graded slabs (PSA, BGS, CGC…) are left out unless this is ticked. Ticked, they're shown with their grade and no market %, since TCGplayer doesn't price slabs. Saved for every run."><input type="checkbox" data-graded="include_graded"> Include graded slabs</label>
           </div>
-          <span class="hint">These start as your usual options from the Settings tab and only change this run. The ZIP, languages and conditions are saved for every run.</span>
+          <span class="hint">These start as your usual options from the Settings tab and only change this run. The ZIP, languages, conditions and graded slabs are saved for every run.</span>
         </div>
         <div class="tool-foot"><span class="cost" id="rn-hunter-cost"></span></div>
       </div>
