@@ -241,6 +241,9 @@ const splitSearch = (type, newHours) => (type || "both") === "both" && num(newHo
 const cloudSplit = () => splitSearch(S.settings?.cloud?.type, S.settings?.cloud?.new_hours);
 const callsPerRun = (cards, etb = true, split = cloudSplit()) =>
   cards.reduce((n, c) => n + c.queries, 0) * (split ? 2 : 1) + (etb ? etbCalls() : 0);
+// what a scheduled run spends: only the scans ticked in Settings
+const scheduledOn = tool => S.settings?.cloud?.[tool] !== false;
+const scheduledCalls = cards => (scheduledOn("hunter") ? callsPerRun(cards, false) : 0) + (scheduledOn("etb") ? etbCalls() : 0);
 
 /* Average billed minutes of recent successful runs, else a guess from card count */
 function minutesPerRun() {
@@ -327,6 +330,9 @@ function initRunForm() {
   $("#rn-auc-on").checked = u.hours > 0;
   $("#rn-hours").value = u.hours || 5;
   $("#rn-pct").value = u.pct;
+  // a manual run starts with the scans the scheduled ones do
+  $("#rn-etb").checked = scheduledOn("etb");
+  $("#rn-hunter").checked = scheduledOn("hunter");
   $("#rn-score").placeholder = S.cfg?.defaults?.min_score ?? 55;
 }
 function runForm() {
@@ -1009,9 +1015,9 @@ function renderCards() {
   const on = all.filter(c => c.enabled);
   $("#c-count").textContent = `${on.length} of ${all.length} cards hunting` + (list.length !== all.length ? ` · ${list.length} shown` : "");
   const perDay = runsPerDay(parseSchedule(S.yml));
-  const daily = callsPerRun(on) * perDay;
+  const daily = scheduledCalls(on) * perDay;
   $("#c-budget").innerHTML = perDay
-    ? `≈ ${callsPerRun(on).toLocaleString()} eBay calls a run · <span class="${daily > EBAY_DAILY ? "bad-t" : daily > EBAY_DAILY * .8 ? "warn-t" : ""}">${Math.round(daily).toLocaleString()} a day</span> of ${EBAY_DAILY.toLocaleString()}`
+    ? `≈ ${scheduledCalls(on).toLocaleString()} eBay calls a run · <span class="${daily > EBAY_DAILY ? "bad-t" : daily > EBAY_DAILY * .8 ? "warn-t" : ""}">${Math.round(daily).toLocaleString()} a day</span> of ${EBAY_DAILY.toLocaleString()}`
     : `≈ ${callsPerRun(on).toLocaleString()} eBay calls a run (schedule paused)`;
   let html = "", group = null;
   for (const c of list) {
@@ -1920,11 +1926,12 @@ function renderSchedule() {
 
   const perDay = runsPerDay(preview);
   const cards = enabledCards();
-  const calls = callsPerRun(cards) * perDay;
+  const calls = scheduledCalls(cards) * perDay;
   const mins = Math.ceil(minutesPerRun()) * perDay * 30;
   $("#sc-calls").innerHTML = `${Math.round(calls).toLocaleString()} <small>of ${EBAY_DAILY.toLocaleString()}</small>`;
   meter($("#sc-calls-m"), calls / EBAY_DAILY, true);
-  $("#sc-calls-h").textContent = `${plural(perDay, "run")} × ~${callsPerRun(cards).toLocaleString()} calls (${plural(cards.length, "card")} + ETB promos)`;
+  const what = [scheduledOn("hunter") && plural(cards.length, "card"), scheduledOn("etb") && "ETB promos"].filter(Boolean).join(" + ") || "nothing ticked in Settings";
+  $("#sc-calls-h").textContent = `${plural(perDay, "run")} × ~${scheduledCalls(cards).toLocaleString()} calls (${what})`;
   $("#sc-mins").innerHTML = `${Math.round(mins).toLocaleString()} <small>of ${ACTIONS_MONTHLY.toLocaleString()}</small>`;
   meter($("#sc-mins-m"), mins / ACTIONS_MONTHLY, true);
   $("#sc-mins-h").textContent = `~${Math.ceil(minutesPerRun())} min a run, rounded up the way GitHub bills it`;
@@ -1973,7 +1980,8 @@ $("#sc-save").onclick = async () => {
 const ST = {dirty: false, form: null};
 function settingsForm() {
   const s = S.settings || {}, c = s.cloud || {};
-  return {type: c.type || "both", hours: c.auction_hours ?? 5, newh: c.new_hours ?? "", pct: c.price_pct ?? ""};
+  return {type: c.type || "both", hours: c.auction_hours ?? 5, newh: c.new_hours ?? "", pct: c.price_pct ?? "",
+          etb: c.etb !== false, hunter: c.hunter !== false};
 }
 function renderSettings() {
   if (!ST.dirty || !ST.form) ST.form = settingsForm();
@@ -1984,6 +1992,11 @@ function renderSettings() {
   $("#st-new").disabled = f.type === "auction";
   $("#st-hours").disabled = f.type === "buy-now";
   if (document.activeElement?.id !== "st-pct") $("#st-pct").value = f.pct;
+  $("#st-etb").checked = f.etb; $("#st-hunter").checked = f.hunter;
+  $("#st-hunter-card").classList.toggle("off", !f.hunter);
+  $("#st-tools-hint").textContent = !f.etb && !f.hunter
+    ? "Both off: scheduled runs still start but scan nothing. To stop them, pause the schedule on the Schedule tab."
+    : !f.hunter ? "Card Hunter is off, so these options below don't apply until it's back on." : "";
   $("#st-save").disabled = !ST.dirty;
   $("#st-state").textContent = ST.dirty ? "Unsaved changes" : "";
   $("#st-account").innerHTML = `Signed in to <b>${esc(S.repo)}</b>${DEMO ? " (demo data)" : ""}. The token is saved in this browser only.
@@ -1995,6 +2008,8 @@ $("#st-type").onclick = e => { const b = e.target.closest("[data-v]"); if (b) { 
 $("#st-hours").addEventListener("input", e => { ST.form.hours = e.target.value; stDirty(); });
 $("#st-new").addEventListener("input", e => { ST.form.newh = e.target.value; stDirty(); });
 $("#st-pct").addEventListener("input", e => { ST.form.pct = e.target.value; stDirty(); });
+$("#st-etb").addEventListener("change", e => { ST.form.etb = e.target.checked; stDirty(); });
+$("#st-hunter").addEventListener("change", e => { ST.form.hunter = e.target.checked; stDirty(); });
 $("#st-save").onclick = async () => {
   const f = ST.form;
   const hours = num(f.hours), pct = f.pct === "" ? null : num(f.pct);
@@ -2007,7 +2022,8 @@ $("#st-save").onclick = async () => {
   try {
     const r = await saveFile("settings.json", text => {
       const d = JSON.parse(text || "{}");
-      d.cloud = {...(d.cloud || {}), auction_hours: hours, new_hours: newh, price_pct: pct === 100 ? null : pct, type: f.type};
+      d.cloud = {...(d.cloud || {}), auction_hours: hours, new_hours: newh, price_pct: pct === 100 ? null : pct, type: f.type,
+                 etb: f.etb, hunter: f.hunter};
       return JSON.stringify(d, null, 2) + "\n";
     }, "Dashboard: update settings");
     S.settings = JSON.parse(r.text); S.settingsSha = r.sha;

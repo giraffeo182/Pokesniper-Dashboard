@@ -254,6 +254,7 @@ input::placeholder { color: var(--faint); }
         flex-direction: column; gap: 12px; }
 .card h2 { margin: 0; font-size: 16px; }
 .card h2 + p { margin: -6px 0 0; color: var(--muted); font-size: 13px; }
+.card.off > :not(h2) { opacity: .45; }
 .times { display: flex; flex-wrap: wrap; gap: 6px; }
 .times span { background: var(--panel-3); border-radius: 6px; padding: 2px 8px; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .budget { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -949,6 +950,15 @@ input::placeholder { color: var(--faint); }
   <section class="view hidden" id="view-settings">
     <div class="panel-wrap"><div class="panel">
       <div class="card">
+        <h2>Scheduled runs</h2>
+        <p>Which scans every automatic run does. A manual run from the Run tab does what its own ticks say.</p>
+        <div class="checks">
+          <label class="check"><input type="checkbox" id="st-etb"> ETB Scanner</label>
+          <label class="check"><input type="checkbox" id="st-hunter"> Card Hunter</label>
+        </div>
+        <span class="hint" id="st-tools-hint"></span>
+      </div>
+      <div class="card" id="st-hunter-card">
         <h2>Card Hunter, scheduled runs</h2>
         <p>What every automatic run searches for. A manual run can override these for itself.</p>
         <div class="field"><span class="field-label">Listing type</span>
