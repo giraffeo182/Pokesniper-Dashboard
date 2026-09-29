@@ -120,10 +120,18 @@ main { flex: 1; min-height: 0; display: flex; }
 .notice.bad { background: var(--bad-bg); color: var(--bad); }
 .notice.good { background: var(--good-bg); color: var(--good); }
 .notice.info { background: var(--blue-bg); color: var(--blue); }
-details.opts > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); font-weight: 600; list-style: none; }
-details.opts > summary::before { content: "▸ "; }
-details.opts[open] > summary::before { content: "▾ "; }
-details.opts > div { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.tool-run { margin-left: auto; flex: none; }
+.tool.off .tool-body, .tool.off .tool-foot { opacity: .45; }
+.suffix input[type=checkbox] { accent-color: var(--accent); margin: 0; flex: none; }
+.suffix input:disabled { opacity: .45; }
+.ltypes { display: flex; flex-direction: column; gap: 6px; }
+.ltype { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ltype > .check:first-child { min-width: 104px; color: var(--text); }
+.lfilter { display: flex; align-items: center; gap: 8px; }
+.lfilter .suffix input { width: 74px; }
+.lfilter.off { opacity: .45; }
+.prices-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 31px; }
+.cost.bad-t { color: var(--bad); }
 
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field > label, .field-label { font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
@@ -352,6 +360,25 @@ input::placeholder { color: var(--faint); }
 .dd-item input { accent-color: var(--accent); margin: 0; width: 16px; height: 16px; }
 .dd-item .num { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 
+/* presets: named groups of cards, ticked on and off together */
+.presets { gap: 6px; }
+.preset { display: inline-flex; align-items: center; border: 1px solid var(--border-2); border-radius: 14px; font-size: 12.5px;
+          color: var(--muted); background: var(--panel-2); }
+.preset label { display: inline-flex; align-items: center; gap: 6px; padding: 3px 3px 3px 9px; cursor: pointer; }
+.preset input { accent-color: var(--accent); margin: 0; cursor: pointer; }
+.preset:hover { color: var(--text); }
+.preset.on { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-2)); color: var(--text); background: var(--accent-bg); }
+.preset .pn { color: var(--faint); font-variant-numeric: tabular-nums; }
+.preset .pe { border: 0; background: none; color: var(--faint); cursor: pointer; padding: 4px 9px 4px 4px; display: inline-flex; }
+.preset .pe:hover { color: var(--text); }
+.preset .pe svg { width: 13px; height: 13px; }
+/* picking cards for a preset: the presets row becomes its name and buttons */
+#c-presets .pe-tag { font-weight: 650; font-size: 12px; color: var(--accent-ink); background: var(--accent); padding: 2px 8px; border-radius: 6px; }
+#pe-name { flex: 0 1 240px; min-width: 130px; width: auto; }
+#c-presets .pe-help { flex-basis: 100%; }
+.picking #c-presets { background: var(--accent-bg); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-2));
+                      border-radius: 10px; padding: 8px 10px; }
+
 /* catalog: eras -> sets -> cards */
 .cmode { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .cmode.searching { flex: none; }
@@ -532,56 +559,111 @@ input::placeholder { color: var(--faint); }
   <!-- ================= RUN ================= -->
   <section class="view" id="view-run">
     <div class="tools">
+      <div class="tool" id="rn-etb-tool">
+        <div class="tool-head">
+          <div class="tool-icon" style="background:var(--good-bg);color:var(--good)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          </div>
+          <div><h3>ETB Scanner</h3><p>New listings for the ETB promos, with the Pokemon Center stamp check built in.</p></div>
+          <label class="check tool-run" title="Include the ETB Scanner in this run"><input type="checkbox" id="rn-etb" checked> Run</label>
+        </div>
+        <div class="tool-body">
+          <div class="dd" id="etb-dd">
+            <button class="dd-btn" id="etb-dd-btn" aria-expanded="false" aria-controls="etb-dd-panel">
+              <span id="etb-dd-label">All promos</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <div class="dd-panel hidden" id="etb-dd-panel">
+              <div class="dd-head">
+                <button class="btn ghost sm" id="etb-all">Select all</button>
+                <button class="btn ghost sm" id="etb-none">Deselect all</button>
+                <span class="spacer"></span>
+                <span class="hint" id="etb-dd-count"></span>
+              </div>
+              <div class="dd-list" id="etb-dd-list"></div>
+            </div>
+          </div>
+          <span class="hint">Which promos to search, saved for every run. Each one is an eBay call per run.</span>
+        </div>
+        <div class="tool-foot"><span class="cost" id="rn-etb-cost"></span></div>
+      </div>
+      <div class="tool" id="rn-hunter-tool">
+        <div class="tool-head">
+          <div class="tool-icon" style="background:var(--blue-bg);color:var(--blue)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><circle cx="12" cy="10" r="3"/><path d="M8 17h8"/></svg>
+          </div>
+          <div><h3>Card Hunter</h3><p>Finds cards by their artwork, even when the title is wrong.</p></div>
+          <label class="check tool-run" title="Include Card Hunter in this run"><input type="checkbox" id="rn-hunter" checked> Run</label>
+        </div>
+        <div class="tool-body">
+          <div class="field picker">
+            <label for="rn-card-input">Cards</label>
+            <input type="text" id="rn-card-input" autocomplete="off" placeholder="All cards switched on — type to pick specific ones">
+            <div class="suggest hidden" id="rn-suggest"></div>
+            <div class="chips" id="rn-chips"></div>
+          </div>
+          <div class="row">
+            <div class="field" title="One flat cap for every card, instead of each card's market price. Leave blank to use market prices.">
+              <label for="rn-price">Max price</label><input type="number" id="rn-price" min="0" step="0.5" placeholder="market" inputmode="decimal"></div>
+            <div class="field" title="How closely a listing's photo has to match your reference art, 0 to 100. Blank = each card's own cutoff.">
+              <label for="rn-score">Min score</label><input type="number" id="rn-score" min="0" max="100" step="1" placeholder="55" inputmode="numeric"></div>
+            <div class="field" title="Where you'd ship to, so eBay can price calculated shipping. Saved for every run.">
+              <label for="rn-zip">Ship to ZIP</label><input type="text" id="rn-zip" inputmode="numeric" maxlength="5" placeholder="e.g. 10001" autocomplete="postal-code"></div>
+          </div>
+          <div class="row" style="align-items:flex-end">
+            <div class="field" style="flex:0 0 118px" title="Cap each card at this share of its TCGplayer market price, shipping included. 80 = only listings at 80% of market or less.">
+              <label for="rn-pct">% of market</label>
+              <div class="suffix"><input type="number" id="rn-pct" min="1" max="500" step="5" inputmode="numeric"><span>%</span></div>
+            </div>
+            <div class="prices-line"><span class="hint" id="rn-prices-age"></span></div>
+          </div>
+          <div class="notice hidden" id="rn-zip-notice">Set your ZIP so shipping gets priced. Without it, most listings show “shipping ?” and slip past the price cap.</div>
+          <div class="field">
+            <span class="field-label">Listings</span>
+            <div class="ltypes">
+              <div class="ltype">
+                <label class="check"><input type="checkbox" id="rn-bin" checked> Buy It Now</label>
+                <div class="lfilter" title="Only Buy It Now listings first put up this recently (relists count from their original date), searched newest-first. Doesn't apply to auctions.">
+                  <label class="check"><input type="checkbox" id="rn-new-on"> listed within</label>
+                  <div class="suffix"><input type="number" id="rn-new" min="1" step="1" value="24" inputmode="numeric"><span>hrs</span></div>
+                </div>
+              </div>
+              <div class="ltype">
+                <label class="check"><input type="checkbox" id="rn-auc" checked> Auctions</label>
+                <div class="lfilter" title="Auctions ending later are held back until a later run, when they're closer to closing. Untick for every auction, however long it has left. Doesn't apply to Buy It Now.">
+                  <label class="check"><input type="checkbox" id="rn-auc-on" checked> ending within</label>
+                  <div class="suffix"><input type="number" id="rn-hours" min="1" step="1" value="5" inputmode="numeric"><span>hrs</span></div>
+                </div>
+              </div>
+            </div>
+            <span class="hint">Each time filter only applies to its own type. An auction with Buy It Now counts if it passes either.</span>
+          </div>
+          <div class="field" title="Untick a language to drop every listing in it: by the title (Japanese, JPN, SV11W, Korean, KOR…), and for matches, by the seller's Language item specific. Saved for every run.">
+            <span class="field-label">Languages</span>
+            <div class="checks" id="rn-langs"></div>
+          </div>
+          <div class="checks">
+            <label class="check" title="Ignores the seen list: everything that matches is reported again"><input type="checkbox" id="rn-all"> Re-check seen</label>
+          </div>
+          <span class="hint">These start as your usual options from the Settings tab and only change this run. The ZIP and languages are saved for every run.</span>
+        </div>
+        <div class="tool-foot"><span class="cost" id="rn-hunter-cost"></span></div>
+      </div>
       <div class="tool">
         <div class="tool-head">
           <div class="tool-icon" style="background:var(--accent-bg);color:var(--accent)">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l12.5-7.5z"/></svg>
           </div>
-          <div><h3>Run now</h3><p>Starts a run on GitHub right away. About 5–10 minutes.</p></div>
+          <div><h3>Run now</h3><p>Starts a run on GitHub right away with the options above. About 5–10 minutes.</p></div>
         </div>
         <div class="tool-body">
-          <div class="checks">
-            <label class="check"><input type="checkbox" id="rn-etb" checked> ETB Scanner</label>
-            <label class="check"><input type="checkbox" id="rn-hunter" checked> Card Hunter</label>
-            <label class="check"><input type="checkbox" id="rn-email" checked> Email results</label>
-          </div>
-          <details class="opts" id="rn-opts">
-            <summary>Card Hunter options for this run</summary>
-            <div>
-              <div class="field picker">
-                <label for="rn-card-input">Cards</label>
-                <input type="text" id="rn-card-input" autocomplete="off" placeholder="All cards switched on — type to pick specific ones">
-                <div class="suggest hidden" id="rn-suggest"></div>
-                <div class="chips" id="rn-chips"></div>
-              </div>
-              <div class="field"><span class="field-label">Listing type</span>
-                <div class="seg" id="rn-type">
-                  <button data-v="" class="active">Usual</button><button data-v="both">Both</button>
-                  <button data-v="buy-now">Buy It Now</button><button data-v="auction">Auctions</button>
-                </div>
-              </div>
-              <div class="row">
-                <div class="field"><label for="rn-new">Buy It Now listed within</label>
-                  <div class="suffix"><input type="number" id="rn-new" min="0" step="1" placeholder="usual"> hrs</div></div>
-                <div class="field"><label for="rn-hours">Auctions ending within</label>
-                  <div class="suffix"><input type="number" id="rn-hours" min="0" step="1" placeholder="usual"> hrs</div></div>
-              </div>
-              <div class="row">
-                <div class="field"><label for="rn-pct">Price cap, % of market</label>
-                  <div class="suffix"><input type="number" id="rn-pct" min="1" max="500" step="5" placeholder="usual"> %</div></div>
-                <div class="field"><span class="field-label">&nbsp;</span>
-                  <label class="check" title="Ignores the seen list: everything that matches is reported again"><input type="checkbox" id="rn-all"> Re-check seen</label></div>
-              </div>
-              <div class="hint">Blank means the usual options from the Settings tab; 0 hrs means no limit. Each time filter only applies to its own listing type, and an auction with Buy It Now counts if it passes either.</div>
-            </div>
-          </details>
+          <div class="checks"><label class="check"><input type="checkbox" id="rn-email" checked> Email results</label></div>
         </div>
         <div class="tool-foot">
           <span class="cost" id="rn-cost"></span>
           <button class="btn primary" id="rn-go">Run now</button>
         </div>
       </div>
-
       <div class="tool">
         <div class="tool-head">
           <div class="tool-icon" style="background:var(--blue-bg);color:var(--blue)">
@@ -658,6 +740,7 @@ input::placeholder { color: var(--faint); }
           <span class="spacer"></span>
           <span class="hint" id="c-budget"></span>
         </div>
+        <div class="cdb-row presets" id="c-presets"></div>
       </div>
 
       <!-- every era and set -->
@@ -831,34 +914,9 @@ input::placeholder { color: var(--faint); }
         <p class="hint">Each time filter only applies to its own listing type. An auction with Buy It Now counts if it passes either.</p>
       </div>
       <div class="card">
-        <h2>ETB Scanner</h2>
-        <p>Which ETB promos every run searches for new listings. Each one is an eBay call per run.</p>
-        <div class="dd" id="etb-dd">
-          <button class="dd-btn" id="etb-dd-btn" aria-expanded="false" aria-controls="etb-dd-panel">
-            <span id="etb-dd-label">All promos</span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-          </button>
-          <div class="dd-panel hidden" id="etb-dd-panel">
-            <div class="dd-head">
-              <button class="btn ghost sm" id="etb-all">Select all</button>
-              <button class="btn ghost sm" id="etb-none">Deselect all</button>
-              <span class="spacer"></span>
-              <span class="hint" id="etb-dd-count"></span>
-            </div>
-            <div class="dd-list" id="etb-dd-list"></div>
-          </div>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Listings</h2>
-        <div class="row">
-          <div class="field"><label for="st-zip">Ship to ZIP</label><input type="text" id="st-zip" inputmode="numeric" maxlength="5">
-            <span class="hint">Lets eBay price calculated shipping.</span></div>
-          <div class="field"></div>
-        </div>
-        <div class="field"><span class="field-label">Languages</span>
-          <div class="checks" id="st-langs"></div>
-          <span class="hint">Unticked languages are dropped by their title ("Japanese", "JPN", "SV11W"…) or the listing's Language item specific.</span></div>
+        <h2>Saved on the Run tab</h2>
+        <p>The ETB promos to search, the ship-to ZIP and the languages to skip are on the Run tab, next to the rest of each scan's options. They apply to every run, scheduled ones too.</p>
+        <div><button class="btn sm" data-goto="run">Open the Run tab</button></div>
       </div>
       <div class="save-row">
         <span class="hint" id="st-state"></span>

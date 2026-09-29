@@ -33,7 +33,7 @@ const WORKFLOW_PATH = ".github/workflows/" + WORKFLOW;
 const EBAY_DAILY = 5000;
 const ACTIONS_MONTHLY = 2000;        // free plan, private repo
 // ETB Scanner: one eBay call per promo that's switched on, plus the token
-const etbCalls = () => (S.promos.length ? S.promos.filter(p => !(S.settings?.etb_off || []).includes(p.key)).length : 27) + 1;
+const etbCalls = () => (S.promos.length ? S.promos.filter(p => !shared().etbOff.has(p.key)).length : 27) + 1;
 const LANGS = ["japanese", "korean", "chinese", "thai", "indonesian"];
 const DEMO = new URLSearchParams(location.search).has("demo");
 
@@ -306,36 +306,179 @@ $("#nav").onclick = e => { const b = e.target.closest("[data-view]"); if (b) sho
 document.addEventListener("click", e => { const b = e.target.closest("[data-goto]"); if (b) show(b.dataset.goto); });
 
 /* ================================================================== RUN */
-const RN = {cards: [], type: "", sel: -1};
+const RN = {cards: [], sel: -1, ready: false};
 
+// The options start as the scheduled runs' (Settings tab), and a run sends
+// only what's different: auto_run.py puts it on top of those.
+function usualRun() {
+  const c = S.settings?.cloud || {};
+  return {type: c.type || "both", newh: num(c.new_hours) || 0, hours: num(c.auction_hours) ?? 5,
+          pct: num(c.price_pct) ?? num(S.cfg?.defaults?.price_pct) ?? 100};
+}
+function initRunForm() {
+  if (RN.ready || !S.cfg || !S.settings) return;
+  RN.ready = true;
+  const u = usualRun();
+  $("#rn-bin").checked = u.type !== "auction";
+  $("#rn-auc").checked = u.type !== "buy-now";
+  $("#rn-new-on").checked = u.newh > 0;
+  $("#rn-new").value = u.newh || 24;
+  $("#rn-auc-on").checked = u.hours > 0;
+  $("#rn-hours").value = u.hours || 5;
+  $("#rn-pct").value = u.pct;
+  $("#rn-score").placeholder = S.cfg?.defaults?.min_score ?? 55;
+}
+function runForm() {
+  const bin = $("#rn-bin").checked, auc = $("#rn-auc").checked;
+  return {bin, auc, type: bin && auc ? "both" : bin ? "buy-now" : auc ? "auction" : "",
+          newh: bin && $("#rn-new-on").checked ? num($("#rn-new").value) : 0,
+          hours: auc && $("#rn-auc-on").checked ? num($("#rn-hours").value) : 0,
+          price: num($("#rn-price").value), pct: num($("#rn-pct").value), score: num($("#rn-score").value)};
+}
 function runArgs() {
-  const a = [];
+  const f = runForm(), u = usualRun(), a = [];
   RN.cards.forEach(k => a.push("--card", k));
-  if (RN.type) a.push("--type", RN.type);
-  const hours = $("#rn-hours").value.trim(), fresh = $("#rn-new").value.trim(), pct = $("#rn-pct").value.trim();
-  if (hours !== "") a.push("--auction-hours", String(+hours));
-  if (fresh !== "") a.push("--new-hours", String(+fresh));
-  if (pct !== "") a.push("--price-pct", String(+pct));
+  if (f.type !== u.type) a.push("--type", f.type);
+  if (f.bin && f.newh !== u.newh) a.push("--new-hours", String(f.newh));
+  if (f.auc && f.hours !== u.hours) a.push("--auction-hours", String(f.hours));
+  if (f.price != null) a.push("--max-price", String(f.price));
+  else if (f.pct != null && f.pct !== u.pct) a.push("--price-pct", String(f.pct));
+  if (f.score != null) a.push("--min-score", String(Math.round(f.score)));
   if ($("#rn-all").checked) a.push("--all");
   return a;
+}
+// why the run can't start yet, if it can't
+function runProblem() {
+  if (!$("#rn-etb").checked && !$("#rn-hunter").checked) return "Nothing selected";
+  if (!$("#rn-hunter").checked) return "";
+  const f = runForm();
+  if (!f.type) return "Pick Buy It Now, Auctions or both";
+  if (f.bin && $("#rn-new-on").checked && !(f.newh >= 1)) return "Listed within: at least 1 hour";
+  if (f.auc && $("#rn-auc-on").checked && !(f.hours >= 1)) return "Ending within: at least 1 hour";
+  if ($("#rn-price").value.trim() && !(f.price > 0)) return "Max price must be over $0";
+  if (f.price == null && $("#rn-pct").value.trim() && !(f.pct > 0)) return "% of market must be over 0";
+  if ($("#rn-score").value.trim() && !(f.score >= 0 && f.score <= 100)) return "Min score goes from 0 to 100";
+  return "";
+}
+function syncRunForm() {
+  const bin = $("#rn-bin").checked, auc = $("#rn-auc").checked;
+  $("#rn-new-on").disabled = !bin;
+  $("#rn-new").disabled = !bin || !$("#rn-new-on").checked;
+  $("#rn-new").closest(".lfilter").classList.toggle("off", !bin);
+  $("#rn-auc-on").disabled = !auc;
+  $("#rn-hours").disabled = !auc || !$("#rn-auc-on").checked;
+  $("#rn-hours").closest(".lfilter").classList.toggle("off", !auc);
+  $("#rn-pct").disabled = $("#rn-price").value.trim() !== "";          // a flat cap replaces it
+  $("#rn-etb-tool").classList.toggle("off", !$("#rn-etb").checked);
+  $("#rn-hunter-tool").classList.toggle("off", !$("#rn-hunter").checked);
+  renderRunCost();
 }
 function renderRunCost() {
   const etb = $("#rn-etb").checked, hunter = $("#rn-hunter").checked;
   const cards = RN.cards.length ? cardRows(false).filter(c => RN.cards.includes(c.key)) : enabledCards();
-  const fresh = $("#rn-new").value.trim();
-  const split = splitSearch(RN.type || S.settings?.cloud?.type, fresh !== "" ? fresh : S.settings?.cloud?.new_hours);
-  const calls = (hunter ? callsPerRun(cards, false, split) : 0) + (etb ? etbCalls() : 0);
-  $("#rn-cost").textContent = etb || hunter ? `≈ ${calls.toLocaleString()} eBay calls` : "Nothing selected";
-  $("#rn-go").disabled = !(etb || hunter);
+  const f = runForm(), hunterCalls = callsPerRun(cards, false, splitSearch(f.type, f.newh));
+  const problem = runProblem();
+  $("#rn-etb-cost").textContent = `≈ ${plural(etbCalls(), "eBay call")}`;
+  $("#rn-hunter-cost").textContent = `${plural(cards.length, "card")} · ≈ ${plural(hunterCalls, "eBay call")}` +
+    (splitSearch(f.type, f.newh) ? " (each search runs twice: newest Buy It Now, then auctions)" : "");
+  $("#rn-cost").textContent = problem || `≈ ${((hunter ? hunterCalls : 0) + (etb ? etbCalls() : 0)).toLocaleString()} eBay calls`;
+  $("#rn-cost").classList.toggle("bad-t", !!problem && problem !== "Nothing selected");
+  $("#rn-go").disabled = !!problem;
 }
-["rn-etb", "rn-hunter", "rn-email"].forEach(id => $("#" + id).addEventListener("change", renderRunCost));
-$("#rn-new").addEventListener("input", renderRunCost);
-$("#rn-type").onclick = e => {
-  const b = e.target.closest("[data-v]"); if (!b) return;
-  RN.type = b.dataset.v;
-  $$("#rn-type button").forEach(x => x.classList.toggle("active", x === b));
-  renderRunCost();
+["input", "change"].forEach(ev => $("#view-run").addEventListener(ev, e => {
+  if (e.target.closest(".tool") && /^rn-(etb|hunter|email|price|score|pct|bin|auc|new|hours|all)/.test(e.target.id || "")) syncRunForm();
+}));
+
+// Saved for every run, scheduled ones too, as on the PC: the ZIP, the
+// languages and the ETB promos. A change saves a moment later, so a burst of
+// ticks is one commit; SV.want holds it until then.
+const SV = {want: null, note: "", timer: null};
+function shared() {
+  if (SV.want) return SV.want;
+  const s = S.settings || {};
+  return {zip: s.ship_to_zip || "", off: new Set(s.exclude_languages || []), etbOff: new Set(s.etb_off || [])};
+}
+function changeShared(fn, note) {
+  const w = shared();
+  SV.want = {zip: w.zip, off: new Set(w.off), etbOff: new Set(w.etbOff)};
+  fn(SV.want);
+  SV.note = SV.note && SV.note !== note ? "run settings" : note;
+  clearTimeout(SV.timer);
+  SV.timer = setTimeout(flushShared, 1200);
+  renderRunShared(); renderRunCost();
+}
+async function flushShared() {
+  clearTimeout(SV.timer); SV.timer = null;
+  const w = SV.want, note = SV.note;
+  if (!w) return;
+  SV.note = "";
+  try {
+    const r = await saveFile("settings.json", text => {
+      const d = JSON.parse(text || "{}");
+      d.ship_to_zip = w.zip;
+      d.exclude_languages = LANGS.filter(l => w.off.has(l));
+      if (S.promos.length) d.etb_off = S.promos.map(p => p.key).filter(k => w.etbOff.has(k));
+      return JSON.stringify(d, null, 2) + "\n";
+    }, `Dashboard: ${note}`);
+    S.settings = JSON.parse(r.text); S.settingsSha = r.sha;
+    if (!SV.timer) SV.want = null;               // nothing newer waiting
+    toast("Saved", "Every run uses it from now on.", "good");
+  } catch (e) {
+    if (e.status !== 401) toast("Couldn't save", e.message, "bad");
+  }
+  renderRunShared(); renderRunCost();
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden && SV.timer) flushShared(); });
+
+function renderRunShared() {
+  const w = shared();
+  if (document.activeElement?.id !== "rn-zip") $("#rn-zip").value = w.zip;
+  $("#rn-zip-notice").classList.toggle("hidden", !!w.zip);
+  patch($("#rn-langs"), `<label class="check" title="Always included"><input type="checkbox" checked disabled> English</label>` +
+    LANGS.map(l => `<label class="check"><input type="checkbox" data-lang="${l}" ${w.off.has(l) ? "" : "checked"}> ${l[0].toUpperCase() + l.slice(1)}</label>`).join(""));
+  const at = S.prices?.updated ? new Date(S.prices.updated) : null;
+  $("#rn-prices-age").textContent = at && !isNaN(at)
+    ? `Market prices from ${at.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})}. Each day's first run refreshes them.`
+    : "No market prices yet. The next run fetches them.";
+  renderPromos();
+}
+$("#rn-zip").addEventListener("change", e => {
+  const v = e.target.value.trim();
+  if (v && !/^\d{5}$/.test(v)) { toast("ZIP must be 5 digits", "", "bad"); e.target.value = shared().zip; return; }
+  if (v !== shared().zip) changeShared(w => { w.zip = v; }, v ? `ship to ${v}` : "clear the ship-to ZIP");
+});
+$("#rn-langs").addEventListener("change", e => {
+  const l = e.target.dataset.lang; if (!l) return;
+  changeShared(w => { if (e.target.checked) w.off.delete(l); else w.off.add(l); }, "languages");
+});
+
+// ETB promos: every one is on unless it's in settings.json's etb_off
+function renderPromos() {
+  const list = S.promos, off = shared().etbOff, on = list.filter(p => !off.has(p.key)).length;
+  $("#etb-dd-label").textContent = !list.length ? "Couldn't load promos.json" : on === list.length ? `All ${list.length} promos` :
+    on === 0 ? "No promos selected: the ETB Scanner will search nothing" : `${on} of ${list.length} promos`;
+  $("#etb-dd-btn").classList.toggle("none", list.length > 0 && on === 0);
+  $("#etb-dd-count").textContent = `${on} of ${list.length} on`;
+  let html = "", set = null;
+  for (const p of list) {
+    if (p.set !== set) { set = p.set; html += `<div class="dd-set">${esc(set)}</div>`; }
+    html += `<label class="dd-item"><input type="checkbox" data-promo="${esc(p.key)}" ${off.has(p.key) ? "" : "checked"}>
+      <span>${esc(p.name)}</span><span class="num">${esc(p.number)}</span></label>`;
+  }
+  const el = $("#etb-dd-list"), top = el.scrollTop;
+  patch(el, html);
+  el.scrollTop = top;
+}
+$("#etb-dd-btn").onclick = () => {
+  const open = $("#etb-dd-panel").classList.toggle("hidden") === false;
+  $("#etb-dd-btn").setAttribute("aria-expanded", open);
 };
+$("#etb-dd-list").addEventListener("change", e => {
+  const k = e.target.dataset.promo; if (!k) return;
+  changeShared(w => { if (e.target.checked) w.etbOff.delete(k); else w.etbOff.add(k); }, "ETB promos");
+});
+$("#etb-all").onclick = () => changeShared(w => { w.etbOff.clear(); }, "ETB promos");
+$("#etb-none").onclick = () => changeShared(w => { w.etbOff = new Set(S.promos.map(p => p.key)); }, "ETB promos");
 
 // card picker
 function renderChips() {
@@ -416,7 +559,9 @@ function typicalSeconds() {
 }
 
 function renderRun() {
-  renderRunCost();
+  initRunForm();
+  renderRunShared();
+  syncRunForm();
   renderNext();
   const runs = S.actions;
   const running = runs.filter(r => r.status !== "completed").length;
@@ -790,7 +935,7 @@ const cardNum = c => parseInt(String(c.number).split("/")[0], 10) || 0;
 function visibleCards() {
   const words = Cd.q.toLowerCase().split(/\s+/).filter(Boolean);
   const list = cardRows().filter(c =>
-    (!Cd.set || c.set === Cd.set) && (!Cd.status || (Cd.status === "on") === c.enabled) &&
+    (!Cd.set || c.set === Cd.set) && (!Cd.status || (Cd.status === "on") === mineOn(c)) &&
     words.every(w => [c.name, c.number, c.set, c.rarity, c.key].join(" ").toLowerCase().includes(w)));
   const by = {
     set: (a, b) => a.set.localeCompare(b.set) || cardNum(a) - cardNum(b),
@@ -806,8 +951,9 @@ function cardRow(c) {
                               c.source === "default" ? `<span class="tag" title="No market price found; using the default cap">default</span>` : "");
   const noRef = c.hasRef ? "" : `<span class="tag warn" title="No reference image in references/${esc(c.key)}/ — Card Hunter skips it">no art</span>`;
   const link = c.tcg ? ` <a href="https://www.tcgplayer.com/product/${esc(c.tcg)}" target="_blank" rel="noopener">↗</a>` : "";
-  return `<tr class="${c.enabled ? "" : "off"} ${c.enabled !== c.saved ? "changed" : ""}">
-    <td><input type="checkbox" data-card="${esc(c.key)}" ${c.enabled ? "checked" : ""}></td>
+  const on = mineOn(c);
+  return `<tr class="${on ? "" : "off"} ${!PE && c.enabled !== c.saved ? "changed" : ""}">
+    <td><input type="checkbox" data-card="${esc(c.key)}" ${on ? "checked" : ""}></td>
     <td>${img}</td>
     <td>${esc(c.name)}${noRef}<div class="sub">${esc(c.key)}</div></td>
     <td class="num">${esc(c.number)}</td><td class="hide-sm">${esc(c.set)}</td><td class="hide-sm">${esc(c.rarity)}</td>
@@ -832,7 +978,7 @@ function renderCards() {
   for (const c of list) {
     if (Cd.sort === "set" && c.set !== group) {
       group = c.set;
-      const inSet = list.filter(x => x.set === group), setOn = inSet.filter(x => x.enabled).length;
+      const inSet = list.filter(x => x.set === group), setOn = inSet.filter(mineOn).length;
       html += `<tr class="grp"><td><input type="checkbox" data-set-toggle="${esc(group)}" ${setOn === inSet.length ? "checked" : ""}
                  ${setOn && setOn < inSet.length ? "data-mixed" : ""} title="Turn the whole set on or off"></td>
                <td colspan="7">${esc(group)}<span class="hint">${plural(inSet.length, "card")} · ${setOn} hunting</span></td></tr>`;
@@ -846,6 +992,7 @@ function renderCards() {
   const n = Cd.pending.size;
   $("#c-savebar").classList.toggle("hidden", !n);
   $("#c-pending").textContent = n ? `${plural(n, "unsaved change")}` : "";
+  renderPresets();
 }
 function setEnabled(keys, enabled) {
   const saved = new Map(cardRows(false).map(c => [c.key, c.enabled]));
@@ -862,11 +1009,14 @@ $("#c-sets").onclick = e => { const b = e.target.closest("[data-set]"); if (b) {
 $("#c-status").onclick = e => { const b = e.target.closest("[data-status]"); if (b) { Cd.status = b.dataset.status; saveCardsView(); renderCards(); } };
 $("#c-rows").addEventListener("change", e => {
   const t = e.target;
-  if (t.dataset.card) setEnabled([t.dataset.card], t.checked);
-  else if (t.dataset.setToggle != null) setEnabled(visibleCards().filter(c => c.set === t.dataset.setToggle).map(c => c.key), t.checked);
+  const turn = PE ? presetPick : setEnabled;
+  if (t.dataset.card) turn([t.dataset.card], t.checked);
+  else if (t.dataset.setToggle != null) turn(visibleCards().filter(c => c.set === t.dataset.setToggle).map(c => c.key), t.checked);
 });
-$("#c-on").onclick = () => setEnabled(visibleCards().filter(c => !c.enabled).map(c => c.key), true);
+$("#c-on").onclick = () => PE ? presetPick(visibleCards().map(c => c.key), true)
+                             : setEnabled(visibleCards().filter(c => !c.enabled).map(c => c.key), true);
 $("#c-off").onclick = () => {
+  if (PE) return presetPick(visibleCards().map(c => c.key), false);
   const keys = visibleCards().filter(c => c.enabled).map(c => c.key);
   if (keys.length > 10 && !confirm(`Turn off all ${keys.length} cards shown?`)) return;
   setEnabled(keys, false);
@@ -905,7 +1055,176 @@ $("#c-save").onclick = async () => {
     renderCards(); renderChips();
   }
 };
-window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty || ST.dirty) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty || ST.dirty || SV.timer) { e.preventDefault(); e.returnValue = ""; } });
+
+/* ------------------------------------------------------------------ presets */
+// Named groups of cards, kept in cards.json as "presets"; the PC dashboard
+// has the same code. Ticking one changes its cards like any other tick
+// (Save sends them); making, editing or deleting one saves straight away.
+const presetList = () => S.cfg?.presets || [];
+const presetCards = () => cardRows();
+async function catalogReady() {
+  loadCatalog();
+  while (!CAT.sets) await sleep(100);
+}
+// cards not in My cards yet are added, like ticking them in a set
+async function turnCards(keys, on) {
+  const have = new Set(cardRows().map(c => c.key));
+  const missing = on ? keys.filter(k => !have.has(k)) : [];
+  if (missing.length) {
+    await catalogReady();
+    const want = new Set(missing);
+    const sets = await loadSets([...new Set(missing.map(setOfKey).filter(Boolean))]);
+    for (const d of sets) if (d) for (const c of d.cards)
+      if (want.has(c.key)) { Cd.adds.set(c.key, catalogEntry(c, d.name)); Cd.pending.set(c.key, true); }
+  }
+  const flip = keys.filter(k => have.has(k));
+  if (flip.length) setEnabled(flip, on); else renderCards();
+}
+async function putPresets(list, note) {
+  const btn = $("#pe-save");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await saveFile("cards.json", text => {
+      const cfg = JSON.parse(text);
+      if (list.length) cfg.presets = list; else delete cfg.presets;
+      return JSON.stringify(cfg, null, 2) + "\n";
+    }, "Dashboard: " + note);
+    S.cfg = JSON.parse(r.text); S.cfgSha = r.sha;
+  } catch (e) {
+    if (e.status !== 401) toast("Couldn't save", e.message, "bad");
+    return false;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+  renderPresets();
+  return true;
+}
+// A preset is ticked when all its cards are on and half-ticked when only
+// some are. Ticking turns them all on (adding any that aren't in My cards
+// yet); unticking turns them off, except cards that are also in another
+// preset that's ticked. Several can be on at once. Cards not in any preset
+// are left as they are.
+const PENCIL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg>`;
+
+// The preset being made or edited: {i, name, keys}, or null. While there is
+// one, the Cards tab picks cards for it: a card's tick means "in the
+// preset", and clicking a card (or an "all shown" button) adds it or takes
+// it out instead of hunting it. Every view, search and filter works as usual.
+let PE = null;
+const catKey = (c, row) => row ? row.key : c.key;
+const catOn = (c, row) => PE ? PE.keys.has(catKey(c, row)) : !!(row && row.enabled);
+const mineOn = c => PE ? PE.keys.has(c.key) : c.enabled;
+function shownPresetKeys() {
+  const m = mine();
+  return (CS.shown || []).map(c => catKey(c, rowFor(c, m)));
+}
+function presetPick(keys, add) {
+  for (const k of keys) if (add) PE.keys.add(k); else PE.keys.delete(k);
+  renderCards();
+}
+// the buttons and filters say what they do while picking
+const PICK_LABELS = {
+  "#cs-on": "Add all shown", "#cs-off": "Remove all shown", "#c-on": "Add all shown", "#c-off": "Remove all shown",
+  '#cs-status [data-status="on"]': "In preset", '#cs-status [data-status="off"]': "Not in preset",
+  '#c-status [data-status="on"]': "In preset", '#c-status [data-status="off"]': "Not in preset",
+};
+function pickLabels() {
+  for (const [sel, alt] of Object.entries(PICK_LABELS)) {
+    const el = $(sel);
+    if (!el) continue;
+    if (el.dataset.label == null) el.dataset.label = el.textContent;
+    el.textContent = PE ? alt : el.dataset.label;
+  }
+}
+
+const cardsOn = () => new Map(presetCards().map(c => [c.key, c.enabled]));
+function presetState(p, on = cardsOn()) {
+  const n = p.cards.filter(k => on.get(k)).length;
+  return {keys: p.cards, on: n, full: p.cards.length > 0 && n === p.cards.length};
+}
+function renderPresets() {
+  const box = $("#c-presets");
+  if (!box) return;
+  $("#view-cards").classList.toggle("picking", !!PE);
+  pickLabels();
+  if (PE) {
+    // built once, so typing in the name box isn't interrupted
+    if (!$("#pe-name", box)) box.innerHTML = `<span class="pe-tag">${PE.i >= 0 ? "Editing preset" : "New preset"}</span>
+      <input type="text" id="pe-name" placeholder="Preset name" maxlength="60" autocomplete="off" value="${esc(PE.name)}">
+      <span class="hint" id="pe-count"></span>
+      <span class="spacer"></span>
+      ${PE.i >= 0 ? `<button class="btn danger sm" id="pe-delete">Delete</button>` : ""}
+      <button class="btn sm" id="pe-cancel">Cancel</button>
+      <button class="btn primary sm" id="pe-save">Save preset</button>
+      <span class="hint pe-help">Pick cards below: selecting one adds it to the preset or takes it out. Browse sets and Pokémon, search and filter as usual.</span>`;
+    const n = PE.keys.size;
+    $("#pe-count").textContent = `${n} card${n === 1 ? "" : "s"} in it`;
+    return;
+  }
+  const list = presetList(), on = cardsOn();
+  box.innerHTML = `<span class="hint">Presets</span>` + list.map((p, i) => {
+    const s = presetState(p, on);
+    return `<span class="preset${s.full ? " on" : ""}">
+      <label title="${s.full ? "Turn these cards off" : "Turn all of these cards on"}"><input type="checkbox" data-preset="${i}"
+        ${s.full ? "checked" : ""} ${s.on && !s.full ? "data-mixed" : ""} ${s.keys.length ? "" : "disabled"}>
+        ${esc(p.name)} <span class="pn">${s.on}/${s.keys.length}</span></label><button class="pe" data-preset-edit="${i}" title="Edit ${esc(p.name)}">${PENCIL}</button></span>`;
+  }).join("") + `<button class="btn ghost sm" data-preset-new>+ New preset</button>` +
+    (list.length ? "" : `<span class="hint">Group cards to turn them on and off together.</span>`);
+  $$("#c-presets [data-mixed]").forEach(el => el.indeterminate = true);
+}
+function togglePreset(i, want) {
+  const list = presetList(), on = cardsOn();
+  const s = presetState(list[i], on);
+  if (want) return turnCards(s.keys.filter(k => !on.get(k)), true);
+  const keep = new Set();
+  list.forEach((q, j) => { if (j !== i) { const t = presetState(q, on); if (t.full) t.keys.forEach(k => keep.add(k)); } });
+  const kept = s.keys.filter(k => on.get(k) && keep.has(k)).length;
+  if (kept) toast(`${kept} card${kept === 1 ? "" : "s"} kept on`, "They're also in another preset that's ticked.");
+  turnCards(s.keys.filter(k => on.get(k) && !keep.has(k)), false);
+}
+function startPreset(i) {
+  const p = presetList()[i];
+  PE = {i: p ? i : -1, name: p ? p.name : "", keys: new Set(p ? p.cards : [])};
+  $("#c-presets").innerHTML = "";
+  renderCards();
+  if (!p) $("#pe-name").focus();
+}
+function stopPreset() {
+  PE = null;
+  renderCards();
+}
+async function savePreset() {
+  const name = $("#pe-name").value.trim().replace(/\s+/g, " ");
+  if (!name) { toast("Give the preset a name"); return $("#pe-name").focus(); }
+  const list = presetList().map(p => ({name: p.name, cards: [...p.cards]}));
+  if (list.some((p, j) => j !== PE.i && p.name.toLowerCase() === name.toLowerCase()))
+    return toast("Name taken", `There's already a preset called ${name}.`, "bad");
+  const cards = [...PE.keys];
+  if (!cards.length) return toast("Pick some cards", "Select the cards this preset should turn on.");
+  if (PE.i >= 0) list[PE.i] = {name, cards}; else list.push({name, cards});
+  if (await putPresets(list, `${PE.i >= 0 ? "edit" : "add"} preset ${name}`)) stopPreset();
+}
+async function deletePreset() {
+  const list = presetList().map(p => ({name: p.name, cards: [...p.cards]}));
+  const [gone] = list.splice(PE.i, 1);
+  if (!gone || !confirm(`Delete the preset "${gone.name}"? Its cards stay as they are.`)) return;
+  if (await putPresets(list, `delete preset ${gone.name}`)) stopPreset();
+}
+$("#c-presets").addEventListener("change", e => {
+  const t = e.target.closest("[data-preset]");
+  if (t) togglePreset(+t.dataset.preset, t.checked);
+});
+$("#c-presets").addEventListener("click", e => {
+  const ed = e.target.closest("[data-preset-edit]");
+  if (ed) startPreset(+ed.dataset.presetEdit);
+  else if (e.target.closest("[data-preset-new]")) startPreset(-1);
+  else if (e.target.closest("#pe-save")) savePreset();
+  else if (e.target.closest("#pe-cancel")) stopPreset();
+  else if (e.target.closest("#pe-delete")) deletePreset();
+});
+$("#c-presets").addEventListener("input", e => { if (e.target.id === "pe-name" && PE) PE.name = e.target.value; });
+$("#c-presets").addEventListener("keydown", e => { if (e.target.id === "pe-name" && e.key === "Enter") savePreset(); });
 
 /* ================================================================== CATALOG */
 // catalog/ on main, built by catalog.py: eras -> sets -> every card, from
@@ -1220,7 +1539,7 @@ async function renderSetCards() {
   $("#cs-sort").value = sort;
 
   let list = cards.filter(c => {
-    const row = rowFor(c, m), on = !!(row && row.enabled);
+    const row = rowFor(c, m), on = catOn(c, row);
     return (CS.variants || !c.variant) && (CS.ntl || !c.ntl) && (CS.reprints || !isRep(c)) && (!CS.rarity || c.rarity === CS.rarity) && (!CS.status || (CS.status === "on") === on) &&
       words.every(w => [c.name, c.number, c.rarity, c.variant || "", global || mon ? c._set : ""].join(" ").toLowerCase().includes(w));
   });
@@ -1232,13 +1551,13 @@ async function renderSetCards() {
   if (by) list = [...list].sort(by);
   else if (sort === "newest") list = [...list].reverse();
   const shown = global ? list.slice(0, 300) : list;
-  const onHere = list.filter(c => { const r = rowFor(c, m); return r && r.enabled; }).length;
-  $("#cs-count").textContent = `${plural(list.length, "card")}${shown.length < list.length ? ` (first ${shown.length} shown)` : ""} · ${onHere} hunting`;
+  const onHere = list.filter(c => catOn(c, rowFor(c, m))).length;
+  $("#cs-count").textContent = `${plural(list.length, "card")}${shown.length < list.length ? ` (first ${shown.length} shown)` : ""} · ${onHere} ${PE ? "in the preset" : "hunting"}`;
   CS.shown = list;
   patch($("#cs-cards"), shown.map(c => {
-    const row = rowFor(c, m), on = !!(row && row.enabled), changed = !!row && row.enabled !== row.saved;
+    const row = rowFor(c, m), on = catOn(c, row), changed = !PE && !!row && row.enabled !== row.saved;
     return `<button class="ccard ${on ? "on" : ""} ${changed ? "changed" : ""}" data-key="${esc(c.key)}" data-id="${esc(c.id)}"
-        title="${esc(`${c.name} ${c.number}${c.variant ? " · " + c.variant : ""} · ${c.rarity}\n${on ? "Hunting. Tap to stop." : "Tap to hunt this card."}`)}">
+        title="${esc(`${c.name} ${c.number}${c.variant ? " · " + c.variant : ""} · ${c.rarity}\n${PE ? (on ? "In the preset. Tap to take it out." : "Tap to add it to the preset.") : on ? "Hunting. Tap to stop." : "Tap to hunt this card."}`)}">
       <div class="art"><img loading="lazy" src="${esc(tcgImg(c.id))}" alt=""></div>
       <span class="tick">${TICK}</span>
       <div class="nm">${esc(c.name)}</div>
@@ -1307,19 +1626,22 @@ $("#cs-cards").onclick = e => {
   const t = e.target.closest("[data-key]");
   if (!t) return;
   const c = CS.shown.find(x => x.key === t.dataset.key);
-  if (c) huntCatalog([c], !t.classList.contains("on"));
+  if (c && PE) presetPick([catKey(c, rowFor(c, mine()))], !t.classList.contains("on"));
+  else if (c) huntCatalog([c], !t.classList.contains("on"));
 };
 function shownWhere(on) {
   const m = mine();
   return CS.shown.filter(c => { const r = rowFor(c, m); return !!(r && r.enabled) === on; });
 }
 $("#cs-on").onclick = () => {
+  if (PE) return presetPick(shownPresetKeys(), true);
   const cards = shownWhere(false);
   const perDay = runsPerDay(parseSchedule(S.yml)) || 1;
   if (cards.length > 25 && !confirm(`Hunt all ${cards.length} cards shown? That's about ${(cards.length * 2 * perDay).toLocaleString()} more eBay calls a day (you get ${EBAY_DAILY.toLocaleString()}).`)) return;
   huntCatalog(cards, true);
 };
 $("#cs-off").onclick = () => {
+  if (PE) return presetPick(shownPresetKeys(), false);
   const cards = shownWhere(true);
   if (cards.length > 10 && !confirm(`Stop hunting all ${cards.length} cards shown?`)) return;
   huntCatalog(cards, false);
@@ -1492,8 +1814,7 @@ $("#sc-save").onclick = async () => {
 const ST = {dirty: false, form: null};
 function settingsForm() {
   const s = S.settings || {}, c = s.cloud || {};
-  return {type: c.type || "both", hours: c.auction_hours ?? 5, newh: c.new_hours ?? "", pct: c.price_pct ?? "", zip: s.ship_to_zip || "",
-          off: new Set(s.exclude_languages || []), etbOff: new Set(s.etb_off || [])};
+  return {type: c.type || "both", hours: c.auction_hours ?? 5, newh: c.new_hours ?? "", pct: c.price_pct ?? ""};
 }
 function renderSettings() {
   if (!ST.dirty || !ST.form) ST.form = settingsForm();
@@ -1504,10 +1825,6 @@ function renderSettings() {
   $("#st-new").disabled = f.type === "auction";
   $("#st-hours").disabled = f.type === "buy-now";
   if (document.activeElement?.id !== "st-pct") $("#st-pct").value = f.pct;
-  if (document.activeElement?.id !== "st-zip") $("#st-zip").value = f.zip;
-  $("#st-langs").innerHTML = `<label class="check"><input type="checkbox" checked disabled> English</label>` +
-    LANGS.map(l => `<label class="check"><input type="checkbox" data-lang="${l}" ${f.off.has(l) ? "" : "checked"}> ${l[0].toUpperCase() + l.slice(1)}</label>`).join("");
-  renderPromos(f);
   $("#st-save").disabled = !ST.dirty;
   $("#st-state").textContent = ST.dirty ? "Unsaved changes" : "";
   $("#st-account").innerHTML = `Signed in to <b>${esc(S.repo)}</b>${DEMO ? " (demo data)" : ""}. The token is saved in this browser only.
@@ -1515,47 +1832,12 @@ function renderSettings() {
 }
 function stDirty() { ST.dirty = true; renderSettings(); }
 
-// ETB promos: every one is on unless it's in settings.json's etb_off
-function renderPromos(f) {
-  const list = S.promos, on = list.filter(p => !f.etbOff.has(p.key)).length;
-  $("#etb-dd-label").textContent = !list.length ? "Couldn't load promos.json" : on === list.length ? `All ${list.length} promos` :
-    on === 0 ? "No promos selected: the ETB Scanner will search nothing" : `${on} of ${list.length} promos`;
-  $("#etb-dd-btn").classList.toggle("none", list.length > 0 && on === 0);
-  $("#etb-dd-count").textContent = `${on} of ${list.length} on`;
-  let html = "", set = null;
-  for (const p of list) {
-    if (p.set !== set) { set = p.set; html += `<div class="dd-set">${esc(set)}</div>`; }
-    html += `<label class="dd-item"><input type="checkbox" data-promo="${esc(p.key)}" ${f.etbOff.has(p.key) ? "" : "checked"}>
-      <span>${esc(p.name)}</span><span class="num">${esc(p.number)}</span></label>`;
-  }
-  const el = $("#etb-dd-list"), top = el.scrollTop;
-  patch(el, html);
-  el.scrollTop = top;
-}
-$("#etb-dd-btn").onclick = () => {
-  const open = $("#etb-dd-panel").classList.toggle("hidden") === false;
-  $("#etb-dd-btn").setAttribute("aria-expanded", open);
-};
-$("#etb-dd-list").addEventListener("change", e => {
-  const k = e.target.dataset.promo; if (!k) return;
-  if (e.target.checked) ST.form.etbOff.delete(k); else ST.form.etbOff.add(k);
-  stDirty();
-});
-$("#etb-all").onclick = () => { ST.form.etbOff.clear(); stDirty(); };
-$("#etb-none").onclick = () => { ST.form.etbOff = new Set(S.promos.map(p => p.key)); stDirty(); };
 $("#st-type").onclick = e => { const b = e.target.closest("[data-v]"); if (b) { ST.form.type = b.dataset.v; stDirty(); } };
 $("#st-hours").addEventListener("input", e => { ST.form.hours = e.target.value; stDirty(); });
 $("#st-new").addEventListener("input", e => { ST.form.newh = e.target.value; stDirty(); });
 $("#st-pct").addEventListener("input", e => { ST.form.pct = e.target.value; stDirty(); });
-$("#st-zip").addEventListener("input", e => { ST.form.zip = e.target.value; stDirty(); });
-$("#st-langs").addEventListener("change", e => {
-  const l = e.target.dataset.lang; if (!l) return;
-  if (e.target.checked) ST.form.off.delete(l); else ST.form.off.add(l);
-  stDirty();
-});
 $("#st-save").onclick = async () => {
   const f = ST.form;
-  if (f.zip && !/^\d{5}$/.test(f.zip.trim())) return toast("ZIP must be 5 digits", "", "bad");
   const hours = num(f.hours), pct = f.pct === "" ? null : num(f.pct);
   const newh = String(f.newh).trim() === "" ? null : num(f.newh);
   if (hours == null || hours < 1) return toast("Auction window must be at least 1 hour", "", "bad");
@@ -1566,9 +1848,6 @@ $("#st-save").onclick = async () => {
   try {
     const r = await saveFile("settings.json", text => {
       const d = JSON.parse(text || "{}");
-      d.ship_to_zip = f.zip.trim();
-      d.exclude_languages = LANGS.filter(l => f.off.has(l));
-      if (S.promos.length) d.etb_off = S.promos.map(p => p.key).filter(k => f.etbOff.has(k));
       d.cloud = {...(d.cloud || {}), auction_hours: hours, new_hours: newh, price_pct: pct === 100 ? null : pct, type: f.type};
       return JSON.stringify(d, null, 2) + "\n";
     }, "Dashboard: update settings");
@@ -1578,7 +1857,7 @@ $("#st-save").onclick = async () => {
   } catch (e) {
     if (e.status !== 401) toast("Couldn't save settings", e.message, "bad");
   } finally {
-    btn.textContent = "Save settings"; renderSettings(); renderCards();
+    btn.textContent = "Save settings"; renderSettings(); renderCards(); RN.ready = false; renderRun();
   }
 };
 $("#st-signout").onclick = () => { if (confirm("Sign out on this device? You'll need the token to sign back in.")) signOut(); };
