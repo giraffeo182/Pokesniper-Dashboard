@@ -359,6 +359,10 @@ input::placeholder { color: var(--faint); }
 .dd-item:hover { background: var(--panel-3); }
 .dd-item input { accent-color: var(--accent); margin: 0; width: 16px; height: 16px; }
 .dd-item .num { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* Card Hunter's languages and conditions, side by side */
+.dd-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.dd-note { padding: 7px 12px 9px; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.45; color: var(--muted); }
+@media (max-width: 720px) { .dd-row { grid-template-columns: 1fr; } }
 
 /* presets: named groups of cards, ticked on and off together */
 .presets { gap: 6px; }
@@ -665,14 +669,38 @@ input::placeholder { color: var(--faint); }
             </div>
             <span class="hint">Each time filter only applies to its own type. An auction with Buy It Now counts if it passes either.</span>
           </div>
-          <div class="field" title="Untick a language to drop every listing in it: by the title (Japanese, JPN, SV11W, Korean, KOR…), and for matches, by the seller's Language item specific. Saved for every run.">
-            <span class="field-label">Languages</span>
-            <div class="checks" id="rn-langs"></div>
+          <div class="dd-row">
+            <div class="field">
+              <span class="field-label">Languages</span>
+              <div class="dd">
+                <button class="dd-btn" id="lang-dd-btn" aria-expanded="false" aria-controls="lang-dd-panel">
+                  <span id="lang-dd-label">All languages</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+                <div class="dd-panel hidden" id="lang-dd-panel">
+                  <div class="dd-list" id="rn-langs"></div>
+                  <div class="dd-note">Untick a language to drop its listings: by the title (Japanese, JPN, SV11W, Korean, ITA…), and for matches, by the language the seller picked on eBay. Saved for every run.</div>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <span class="field-label">Conditions</span>
+              <div class="dd">
+                <button class="dd-btn" id="cond-dd-btn" aria-expanded="false" aria-controls="cond-dd-panel">
+                  <span id="cond-dd-label">All conditions</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+                <div class="dd-panel hidden" id="cond-dd-panel">
+                  <div class="dd-list" id="rn-conds"></div>
+                  <div class="dd-note">Untick a condition to drop its listings: by the title ("DMG", "MP/HP", "PSA 3"), and for matches, by the condition the seller picked on eBay (one eBay call per match while any is unticked). A listing that says nothing counts as Near Mint. Saved for every run.</div>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="checks">
             <label class="check" title="Ignores the seen list: everything that matches is reported again"><input type="checkbox" id="rn-all"> Re-check seen</label>
           </div>
-          <span class="hint">These start as your usual options from the Settings tab and only change this run. The ZIP and languages are saved for every run.</span>
+          <span class="hint">These start as your usual options from the Settings tab and only change this run. The ZIP, languages and conditions are saved for every run.</span>
         </div>
         <div class="tool-foot"><span class="cost" id="rn-hunter-cost"></span></div>
       </div>

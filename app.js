@@ -396,11 +396,12 @@ const SV = {want: null, note: "", timer: null};
 function shared() {
   if (SV.want) return SV.want;
   const s = S.settings || {};
-  return {zip: s.ship_to_zip || "", off: new Set(s.exclude_languages || []), etbOff: new Set(s.etb_off || [])};
+  return {zip: s.ship_to_zip || "", off: new Set(s.exclude_languages || []), condOff: new Set(s.exclude_conditions || []),
+          etbOff: new Set(s.etb_off || [])};
 }
 function changeShared(fn, note) {
   const w = shared();
-  SV.want = {zip: w.zip, off: new Set(w.off), etbOff: new Set(w.etbOff)};
+  SV.want = {zip: w.zip, off: new Set(w.off), condOff: new Set(w.condOff), etbOff: new Set(w.etbOff)};
   fn(SV.want);
   SV.note = SV.note && SV.note !== note ? "run settings" : note;
   clearTimeout(SV.timer);
@@ -417,6 +418,7 @@ async function flushShared() {
       const d = JSON.parse(text || "{}");
       d.ship_to_zip = w.zip;
       d.exclude_languages = LANGS.filter(l => w.off.has(l));
+      d.exclude_conditions = CONDS.map(([c]) => c).filter(c => w.condOff.has(c));
       if (S.promos.length) d.etb_off = S.promos.map(p => p.key).filter(k => w.etbOff.has(k));
       return JSON.stringify(d, null, 2) + "\n";
     }, `Dashboard: ${note}`);
@@ -434,8 +436,16 @@ function renderRunShared() {
   const w = shared();
   if (document.activeElement?.id !== "rn-zip") $("#rn-zip").value = w.zip;
   $("#rn-zip-notice").classList.toggle("hidden", !!w.zip);
-  patch($("#rn-langs"), `<label class="check" title="Always included"><input type="checkbox" checked disabled> English</label>` +
-    LANGS.map(l => `<label class="check"><input type="checkbox" data-lang="${l}" ${w.off.has(l) ? "" : "checked"}> ${l[0].toUpperCase() + l.slice(1)}</label>`).join(""));
+  const cap = l => l[0].toUpperCase() + l.slice(1);
+  patch($("#rn-langs"), `<label class="dd-item" title="Always included"><input type="checkbox" checked disabled> English</label>` +
+    LANGS.map(l => `<label class="dd-item"><input type="checkbox" data-lang="${l}" ${w.off.has(l) ? "" : "checked"}> ${cap(l)}</label>`).join(""));
+  const langsOn = LANGS.filter(l => !w.off.has(l));
+  $("#lang-dd-label").textContent = langsOn.length === LANGS.length ? "All languages" : langsOn.length ? `English + ${langsOn.map(cap).join(", ")}` : "English only";
+  patch($("#rn-conds"), CONDS.map(([c, name]) =>
+    `<label class="dd-item"><input type="checkbox" data-cond="${c}" ${w.condOff.has(c) ? "" : "checked"}> ${name}<span class="num">${c}</span></label>`).join(""));
+  const condsOn = CONDS.map(([c]) => c).filter(c => !w.condOff.has(c));
+  $("#cond-dd-label").textContent = condsOn.length === CONDS.length ? "All conditions" : condsOn.length ? condsOn.join(", ") : "None: every listing is dropped";
+  $("#cond-dd-btn").classList.toggle("none", !condsOn.length);
   const at = S.prices?.updated ? new Date(S.prices.updated) : null;
   $("#rn-prices-age").textContent = at && !isNaN(at)
     ? `Market prices from ${at.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})}. Each day's first run refreshes them.`
@@ -451,6 +461,14 @@ $("#rn-langs").addEventListener("change", e => {
   const l = e.target.dataset.lang; if (!l) return;
   changeShared(w => { if (e.target.checked) w.off.delete(l); else w.off.add(l); }, "languages");
 });
+$("#rn-conds").addEventListener("change", e => {
+  const c = e.target.dataset.cond; if (!c) return;
+  changeShared(w => { if (e.target.checked) w.condOff.delete(c); else w.condOff.add(c); }, "conditions");
+});
+for (const id of ["lang", "cond"]) $(`#${id}-dd-btn`).onclick = () => {
+  const open = $(`#${id}-dd-panel`).classList.toggle("hidden") === false;
+  $(`#${id}-dd-btn`).setAttribute("aria-expanded", open);
+};
 
 // ETB promos: every one is on unless it's in settings.json's etb_off
 function renderPromos() {
