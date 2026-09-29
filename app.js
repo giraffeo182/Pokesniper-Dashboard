@@ -8,7 +8,8 @@
  *   - Cards / Settings / Schedule: edit cards.json, settings.json and the
  *     workflow's schedule, each saved as a commit on `main`. Cards also
  *     browses catalog/ (every set from Sword & Shield on, built by
- *     catalog.py), and ticking a card there adds it to cards.json
+ *     catalog.py) by set or by Pokemon, and ticking a card there adds it
+ *     to cards.json
  */
 "use strict";
 
@@ -903,10 +904,11 @@ window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty |
 // market: the catalog's price per key, for cards added since the last run.
 // today: every catalog card's price from today, by TCGplayer product id
 // (catalog_prices.json on the results branch, refreshed daily by the runs)
-const CAT = {sets: null, bySlug: new Map(), data: new Map(), all: null, error: "", market: new Map(), today: {}, todayAt: null};
-const CS = {mode: "sets", slug: null, q: "", gq: "", rarity: "", status: "", variants: false, sort: "number", shown: []};
-Object.assign(CS, store.get("catalogView", {}), {q: "", gq: "", slug: null, shown: []});
-const saveCatalogView = () => store.set("catalogView", {mode: CS.mode === "set" ? "sets" : CS.mode, variants: CS.variants, sort: CS.sort});
+const CAT = {sets: null, bySlug: new Map(), data: new Map(), all: null, allDone: null, error: "", market: new Map(), today: {}, todayAt: null};
+// modes: sets (every set) -> set (one), dex (every Pokemon) -> mon (one), mine
+const CS = {mode: "sets", slug: null, dex: null, q: "", gq: "", dq: "", gen: 0, rarity: "", status: "", variants: false, sort: "number", monSort: "number", shown: []};
+Object.assign(CS, store.get("catalogView", {}), {q: "", gq: "", dq: "", slug: null, dex: null, shown: []});
+const saveCatalogView = () => store.set("catalogView", {mode: {set: "sets", mon: "dex"}[CS.mode] || CS.mode, gen: CS.gen, variants: CS.variants, sort: CS.sort, monSort: CS.monSort});
 const TICK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
 const fmtRelease = iso => new Date(iso + "T12:00:00").toLocaleDateString([], {month: "long", day: "numeric", year: "numeric"});
 
@@ -942,6 +944,7 @@ async function loadSet(slug) {
   return CAT.data.get(slug);
 }
 async function loadAllSets() {
+  if (!CAT.bySlug.size) return [];                     // sets.json not loaded yet
   if (!CAT.all) {
     // a few at a time: 46 files at once is rude to GitHub and slow on a phone
     const slugs = [...CAT.bySlug.keys()], out = new Array(slugs.length);
@@ -950,7 +953,7 @@ async function loadAllSets() {
       await Promise.all(Array.from({length: 6}, async () => {
         while (next < slugs.length) { const i = next++; out[i] = await loadSet(slugs[i]).catch(() => null); }
       }));
-      return out;
+      return (CAT.allDone = out);
     })();
   }
   return CAT.all;
@@ -986,17 +989,20 @@ function catalogEntry(c, setName) {
 
 function renderCatalog() {
   if (!$("#cs-sets")) return;
-  $$("#c-mode button").forEach(b => b.classList.toggle("active", b.dataset.mode === (CS.mode === "set" ? "sets" : CS.mode)));
+  $$("#c-mode button").forEach(b => b.classList.toggle("active", b.dataset.mode === ({set: "sets", mon: "dex"}[CS.mode] || CS.mode)));
   // searching every set keeps the search box and shows the results below it
   const searching = CS.mode === "sets" && !!CS.gq;
   $("#cm-sets").classList.toggle("hidden", CS.mode !== "sets");
   $("#cm-sets").classList.toggle("searching", searching);
   $("#cs-sets").classList.toggle("hidden", searching);
-  $("#cm-set").classList.toggle("hidden", !(CS.mode === "set" || searching));
+  $("#cm-dex").classList.toggle("hidden", CS.mode !== "dex");
+  $("#cm-set").classList.toggle("hidden", !(CS.mode === "set" || CS.mode === "mon" || searching));
   $("#cm-set").classList.toggle("global", searching);
   $("#cm-mine").classList.toggle("hidden", CS.mode !== "mine");
+  $("#cs-back-t").textContent = CS.mode === "mon" ? "All Pokémon" : "All sets";
   if (CS.mode === "sets" && !searching) renderSetTiles();
-  else if (CS.mode === "set" || searching) renderSetCards();
+  else if (CS.mode === "dex") renderDexTiles();
+  else if (CS.mode === "set" || CS.mode === "mon" || searching) renderSetCards();
 }
 
 function renderSetTiles() {
@@ -1025,15 +1031,102 @@ function renderSetTiles() {
   }).join("")}</div></div>`).join(""));
 }
 
+/* ------------------------------------------------------------------ pokemon: generations -> pokemon -> cards */
+// catalog/pokemon.json (catalog.py) lists all 1,025; each catalog card's
+// "dex" says which Pokemon are on it. Pictures are PokeAPI's sprites.
+const DEX = {data: null, byDex: new Map(), loading: null};
+const SPRITES = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon";
+const sprite = n => `${SPRITES}/${n}.png`;
+const artwork = n => `${SPRITES}/other/official-artwork/${n}.png`;
+const dexNo = n => "#" + String(n).padStart(4, "0");
+const ROMAN = ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
+const genName = g => `Generation ${ROMAN[g.gen] || g.gen}${g.region ? " · " + g.region : ""}`;
+const foldName = s => s.normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/’/g, "'").toLowerCase();
+
+function loadPokemon() {
+  if (!DEX.loading) DEX.loading = getRaw("catalog/pokemon.json", "main").then(JSON.parse).then(d => {
+    for (const g of d.generations || []) for (const p of g.pokemon) DEX.byDex.set(p.dex, {...p, gen: g.gen, region: g.region});
+    DEX.data = d;
+  }).catch(e => { DEX.loading = null; throw e; });
+  return DEX.loading;
+}
+// Dex number -> cards being hunted, once every set is loaded (null till then)
+function huntingByDex() {
+  if (!CAT.allDone) return null;
+  const m = mine(), out = new Map();
+  for (const d of CAT.allDone) if (d) for (const c of d.cards) {
+    if (!c.dex) continue;
+    const r = rowFor(c, m);
+    if (r && r.enabled) for (const n of c.dex) out.set(n, (out.get(n) || 0) + 1);
+  }
+  return out;
+}
+
+async function renderDexTiles() {
+  const el = $("#cs-dex");
+  if (!DEX.data) {
+    el.innerHTML = `<div class="empty">Loading Pokémon…</div>`; el._html = null;
+    try { await loadPokemon(); } catch (e) {
+      el.innerHTML = e.status === 404
+        ? `<div class="empty"><div>No Pokémon list in the repo yet.<br><span class="muted">Run <span class="mono">python catalog.py</span> on the PC, then Push to GitHub.</span></div></div>`
+        : e.status === 401 ? "" : `<div class="empty">Couldn't load the Pokémon: ${esc(e.message)}</div>`;
+      return;
+    }
+    if (CS.mode !== "dex") return;
+  }
+  const gens = DEX.data.generations || [];
+  const hunting = huntingByDex();
+  if (!hunting && CAT.bySlug.size) loadAllSets().then(() => CS.mode === "dex" && renderDexTiles());
+  if (!gens.some(g => g.gen === CS.gen)) CS.gen = 0;
+  patch($("#cs-gens"), [[0, "All"], ...gens.map(g => [g.gen, ROMAN[g.gen] || g.gen])].map(([v, t]) =>
+    `<button data-gen="${v}" class="${CS.gen === v ? "active" : ""}" title="${v ? esc(genName(gens.find(g => g.gen === v))) : "Every generation"}">${t}</button>`).join(""));
+  $("#cs-dsummary").textContent = `${(DEX.data.count || 0).toLocaleString()} Pokémon · ${(DEX.data.with_cards || 0).toLocaleString()} have cards from Sword & Shield on`;
+  const q = foldName(CS.dq.trim().replace(/^#/, ""));
+  const isNum = /^\d+$/.test(q);
+  const match = p => !q || (isNum ? String(p.dex).startsWith(String(+q)) : foldName(p.name).includes(q));
+  patch(el, gens.filter(g => !CS.gen || g.gen === CS.gen).map(g => {
+    const list = g.pokemon.filter(match);
+    return list.length ? `<div class="era"><h3>${esc(genName(g))}</h3><div class="pgrid">${list.map(p => {
+      const n = hunting ? hunting.get(p.dex) || 0 : 0;
+      const title = p.cards ? `${p.name}: ${plural(p.cards, "card")}` : `No ${p.name} cards from Sword & Shield on`;
+      return `<button class="ptile ${p.cards ? "" : "none"}" data-dex="${p.dex}" title="${esc(title)}">
+        <div class="psprite"><img src="${sprite(p.dex)}" alt="" loading="lazy"></div>
+        <div class="pnum">${dexNo(p.dex)}</div><div class="pname">${esc(p.name)}</div>
+        <div class="pfoot"><span>${plural(p.cards, "card")}</span>${n ? `<span class="hunting">${n} hunting</span>` : ""}</div></button>`;
+    }).join("")}</div></div>` : "";
+  }).join("") || `<div class="empty">No Pokémon match.</div>`);
+}
+
+// every card with this Pokemon on it, oldest first: by its set's release
+// date, or its own for promos (catalog.py estimates those from the number)
+async function monCards(p) {
+  const sets = await loadAllSets();
+  const out = [];
+  for (const d of [...sets].reverse()) {
+    if (!d) continue;
+    const released = (CAT.bySlug.get(d.slug) || {}).date || "";
+    for (const c of d.cards) if (c.dex && c.dex.includes(p.dex)) out.push({...c, _set: d.name, _date: c.date || released});
+  }
+  return out.sort((a, b) => a._date.localeCompare(b._date));      // stable: same day keeps set order
+}
+
 const catNum = c => { const m = /(\d+)/.exec(String(c.number)); return m ? +m[1] : 0; };
 async function renderSetCards() {
-  const global = CS.mode === "sets" && !!CS.gq;
+  const global = CS.mode === "sets" && !!CS.gq, mon = CS.mode === "mon";
   let cards;
   if (global) {
     if (!CAT.all) $("#cs-cards").innerHTML = `<div class="empty">Loading every set…</div>`;
     const sets = await loadAllSets();
     if (!(CS.mode === "sets" && CS.gq)) return;            // changed while loading
     cards = sets.filter(Boolean).flatMap(d => d.cards.map(c => ({...c, _set: d.name})));
+  } else if (mon) {
+    const p = DEX.byDex.get(CS.dex);
+    if (!p) { CS.mode = "dex"; return renderCatalog(); }
+    $("#cs-title").innerHTML = `<img class="mon" src="${artwork(p.dex)}" alt="">` +
+      `<div><b>${esc(p.name)}</b><div class="hint">${dexNo(p.dex)} · ${esc(genName(p))} · ${plural(p.cards, "card")}</div></div>`;
+    if (!CAT.allDone) { $("#cs-cards").innerHTML = `<div class="empty">Loading every ${esc(p.name)} card…</div>`; $("#cs-cards")._html = null; }
+    cards = await monCards(p);
+    if (CS.mode !== "mon" || CS.dex !== p.dex) return;
   } else {
     const st = CAT.bySlug.get(CS.slug);
     if (!st) { CS.mode = "sets"; return renderCatalog(); }
@@ -1059,19 +1152,27 @@ async function renderSetCards() {
   $("#cs-rarity").innerHTML = [["", "All rarities"], ...rarities.map(r => [r, r])].map(([v, t]) =>
     `<option value="${esc(v)}" ${CS.rarity === v ? "selected" : ""}>${esc(t)}</option>`).join("");
   $$("#cs-status button").forEach(b => b.classList.toggle("active", b.dataset.status === CS.status));
-  $("#cs-sort").value = CS.sort;
+  $("#cs-search").placeholder = mon ? "Search these cards…" : "Search this set…";
+  // a Pokemon's cards come from every set, so "number" is release order there
+  const sorts = [...(mon ? [["number", "Oldest first"], ["newest", "Newest first"]] : [["number", "Number"]]),
+    ["market-desc", "Market price, high → low"], ["market-asc", "Market price, low → high"], ["name", "Name"]];
+  const want = mon ? CS.monSort : CS.sort;            // a Pokemon keeps its own: release order unless changed
+  const sort = sorts.some(([v]) => v === want) ? want : "number";
+  patch($("#cs-sort"), sorts.map(([v, t]) => `<option value="${v}">${t}</option>`).join(""));
+  $("#cs-sort").value = sort;
 
   let list = cards.filter(c => {
     const row = rowFor(c, m), on = !!(row && row.enabled);
     return (CS.variants || !c.variant) && (!CS.rarity || c.rarity === CS.rarity) && (!CS.status || (CS.status === "on") === on) &&
-      words.every(w => [c.name, c.number, c.rarity, c.variant || "", global ? c._set : ""].join(" ").toLowerCase().includes(w));
+      words.every(w => [c.name, c.number, c.rarity, c.variant || "", global || mon ? c._set : ""].join(" ").toLowerCase().includes(w));
   });
   const by = {
     name: (a, b) => a.name.localeCompare(b.name) || catNum(a) - catNum(b),
     "market-desc": (a, b) => (b.market ?? -1) - (a.market ?? -1),
     "market-asc": (a, b) => (a.market ?? 1e9) - (b.market ?? 1e9),
-  }[CS.sort];                                   // "number": the catalog is already in set order
+  }[sort];                                      // "number": the catalog is already in set order
   if (by) list = [...list].sort(by);
+  else if (sort === "newest") list = [...list].reverse();
   const shown = global ? list.slice(0, 300) : list;
   const onHere = list.filter(c => { const r = rowFor(c, m); return r && r.enabled; }).length;
   $("#cs-count").textContent = `${plural(list.length, "card")}${shown.length < list.length ? ` (first ${shown.length} shown)` : ""} · ${onHere} hunting`;
@@ -1085,8 +1186,8 @@ async function renderSetCards() {
       <div class="nm">${esc(c.name)}</div>
       <div class="meta"><span>${esc(c.number)}</span><span class="rar">${esc(c.rarity)}</span><span class="mk">${money(c.market)}</span></div>
       ${c.variant ? `<div class="var">${esc(c.variant)}</div>` : ""}
-      ${global ? `<div class="from">${esc(c._set)}</div>` : ""}</button>`;
-  }).join("") || `<div class="empty">No cards match.</div>`);
+      ${global || mon ? `<div class="from">${esc(c._set)}</div>` : ""}</button>`;
+  }).join("") || `<div class="empty">${mon && !cards.length ? "No cards of this Pokémon from Sword & Shield on." : "No cards match."}</div>`);
 }
 
 // Tick or untick catalog cards: ones already in cards.json flip like the
@@ -1106,6 +1207,17 @@ function openSet(slug) {
   CS.mode = "set"; CS.slug = slug; CS.q = ""; CS.rarity = ""; CS.status = ""; $("#cs-search").value = "";
   renderCatalog(); window.scrollTo(0, 0); $("#cm-set .cdb-body").scrollTop = 0;
 }
+function openMon(dex) {
+  CS.dexScroll = [$("#cs-dex").scrollTop, window.scrollY];     // hidden, it forgets; back puts it back
+  CS.mode = "mon"; CS.dex = dex; CS.q = ""; CS.rarity = ""; CS.status = ""; $("#cs-search").value = "";
+  renderCatalog(); window.scrollTo(0, 0); $("#cm-set .cdb-body").scrollTop = 0;
+}
+$("#cs-dex").onclick = e => { const t = e.target.closest("[data-dex]"); if (t) openMon(+t.dataset.dex); };
+$("#cs-gens").onclick = e => {
+  const b = e.target.closest("[data-gen]");
+  if (b) { CS.gen = +b.dataset.gen; saveCatalogView(); renderDexTiles(); $("#cs-dex").scrollTop = 0; }
+};
+$("#cs-dsearch").addEventListener("input", e => { CS.dq = e.target.value; renderDexTiles(); });
 $("#c-mode").onclick = e => {
   const b = e.target.closest("[data-mode]");
   if (!b) return;
@@ -1113,7 +1225,14 @@ $("#c-mode").onclick = e => {
   saveCatalogView(); renderCatalog();
 };
 $("#cs-sets").onclick = e => { const t = e.target.closest("[data-slug]"); if (t) openSet(t.dataset.slug); };
-$("#cs-back").onclick = () => { CS.mode = "sets"; CS.gq = ""; $("#cs-gsearch").value = ""; renderCatalog(); };
+$("#cs-back").onclick = () => {
+  if (CS.mode === "mon") {
+    const [top, y] = CS.dexScroll || [0, 0];
+    CS.mode = "dex"; renderCatalog(); $("#cs-dex").scrollTop = top; window.scrollTo(0, y);
+    return;
+  }
+  CS.mode = "sets"; CS.gq = ""; $("#cs-gsearch").value = ""; renderCatalog();
+};
 let gsTimer = null;
 $("#cs-gsearch").addEventListener("input", e => {
   clearTimeout(gsTimer);
@@ -1121,7 +1240,7 @@ $("#cs-gsearch").addEventListener("input", e => {
 });
 $("#cs-search").addEventListener("input", e => { CS.q = e.target.value; renderSetCards(); });
 $("#cs-rarity").onchange = e => { CS.rarity = e.target.value; renderSetCards(); };
-$("#cs-sort").onchange = e => { CS.sort = e.target.value; saveCatalogView(); renderSetCards(); };
+$("#cs-sort").onchange = e => { CS[CS.mode === "mon" ? "monSort" : "sort"] = e.target.value; saveCatalogView(); renderSetCards(); };
 $("#cs-variants").onchange = e => { CS.variants = e.target.checked; saveCatalogView(); renderSetCards(); };
 $("#cs-status").onclick = e => { const b = e.target.closest("[data-status]"); if (b) { CS.status = b.dataset.status; renderSetCards(); } };
 $("#cs-cards").onclick = e => {
