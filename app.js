@@ -915,9 +915,9 @@ window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty |
 // (catalog_prices.json on the results branch, refreshed daily by the runs)
 const CAT = {sets: null, bySlug: new Map(), data: new Map(), ready: new Map(), all: null, allDone: null, error: "", market: new Map(), today: {}, todayAt: null};
 // modes: sets (every set) -> set (one), dex (every Pokemon) -> mon (one), mine
-const CS = {mode: "sets", slug: null, dex: null, q: "", gq: "", dq: "", gen: 0, rarity: "", status: "", variants: false, sort: "number", monSort: "number", shown: []};
+const CS = {mode: "sets", slug: null, dex: null, q: "", gq: "", dq: "", gen: 0, rarity: "", status: "", variants: false, ntl: false, sort: "number", monSort: "number", shown: []};
 Object.assign(CS, store.get("catalogView", {}), {q: "", gq: "", dq: "", slug: null, dex: null, shown: []});
-const saveCatalogView = () => store.set("catalogView", {mode: {set: "sets", mon: "dex"}[CS.mode] || CS.mode, gen: CS.gen, variants: CS.variants, sort: CS.sort, monSort: CS.monSort});
+const saveCatalogView = () => store.set("catalogView", {mode: {set: "sets", mon: "dex"}[CS.mode] || CS.mode, gen: CS.gen, variants: CS.variants, ntl: CS.ntl, sort: CS.sort, monSort: CS.monSort});
 const TICK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
 const fmtRelease = iso => new Date(iso + "T12:00:00").toLocaleDateString([], {month: "long", day: "numeric", year: "numeric"});
 
@@ -1169,6 +1169,10 @@ async function renderSetCards() {
   $("#cs-variants-l").classList.toggle("hidden", !nVariants);
   $("#cs-variants").checked = CS.variants;
   $("#cs-variants-t").textContent = `Variants (${nVariants.toLocaleString()})`;
+  const nNtl = cards.filter(c => c.ntl && (CS.variants || !c.variant)).length;
+  $("#cs-ntl-l").classList.toggle("hidden", !nNtl);
+  $("#cs-ntl").checked = CS.ntl;
+  $("#cs-ntl-t").textContent = `Not tournament legal (${nNtl.toLocaleString()})`;
   const rarities = [...new Set(cards.map(c => c.rarity).filter(Boolean))];
   if (CS.rarity && !rarities.includes(CS.rarity)) CS.rarity = "";
   $("#cs-rarity").innerHTML = [["", "All rarities"], ...rarities.map(r => [r, r])].map(([v, t]) =>
@@ -1185,7 +1189,7 @@ async function renderSetCards() {
 
   let list = cards.filter(c => {
     const row = rowFor(c, m), on = !!(row && row.enabled);
-    return (CS.variants || !c.variant) && (!CS.rarity || c.rarity === CS.rarity) && (!CS.status || (CS.status === "on") === on) &&
+    return (CS.variants || !c.variant) && (CS.ntl || !c.ntl) && (!CS.rarity || c.rarity === CS.rarity) && (!CS.status || (CS.status === "on") === on) &&
       words.every(w => [c.name, c.number, c.rarity, c.variant || "", global || mon ? c._set : ""].join(" ").toLowerCase().includes(w));
   });
   const by = {
@@ -1264,6 +1268,7 @@ $("#cs-search").addEventListener("input", e => { CS.q = e.target.value; renderSe
 $("#cs-rarity").onchange = e => { CS.rarity = e.target.value; renderSetCards(); };
 $("#cs-sort").onchange = e => { CS[CS.mode === "mon" ? "monSort" : "sort"] = e.target.value; saveCatalogView(); renderSetCards(); };
 $("#cs-variants").onchange = e => { CS.variants = e.target.checked; saveCatalogView(); renderSetCards(); };
+$("#cs-ntl").onchange = e => { CS.ntl = e.target.checked; saveCatalogView(); renderSetCards(); };
 $("#cs-status").onclick = e => { const b = e.target.closest("[data-status]"); if (b) { CS.status = b.dataset.status; renderSetCards(); } };
 $("#cs-cards").onclick = e => {
   const t = e.target.closest("[data-key]");
