@@ -24,6 +24,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/configure-pages@v5
+      # Browsers keep app.js for a while. A page from one publish running a
+      # script from another breaks on its first missing button, so each
+      # publish asks for its own app.js by this commit's id.
+      - name: Tie index.html to this publish's app.js
+        run: |
+          sed -i "s|<script src=\"app.js\"></script>|<script src=\"app.js?v=${GITHUB_SHA::8}\"></script>|" index.html
+          grep -q "app.js?v=${GITHUB_SHA::8}" index.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: .
