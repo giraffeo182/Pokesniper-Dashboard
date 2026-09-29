@@ -3,8 +3,9 @@
  * A static page: everything goes straight from this browser to GitHub's API
  * with the access token you sign in with. Nothing else is involved.
  *   - Run: starts the scan workflow, shows its steps live, lists past runs
- *   - Results: what each run found, read from the private repo's `results`
- *     branch (written by publish_results.py after every run)
+ *   - Reports: what each run found, read from the private repo's `results`
+ *     branch: GitHub's runs (publish_results.py) and the PC's
+ *     (sync_reports.py), the same list as the PC dashboard's Reports tab
  *   - Cards / Settings / Schedule: edit cards.json, settings.json and the
  *     workflow's schedule, each saved as a commit on `main`. Cards also
  *     browses catalog/ (every set from Base Set on, built by
@@ -648,7 +649,7 @@ function renderRunDetail() {
     ${bar}
     <span class="actions">
       ${active ? `<button class="btn sm danger" id="run-cancel">Cancel</button>` : ""}
-      ${res ? `<button class="btn sm" data-open-result="${esc(res.id)}">View results</button>` : ""}
+      ${res ? `<button class="btn sm" data-open-result="${esc(res.id)}">View report</button>` : ""}
       <a class="btn sm" href="${esc(safeUrl(r.html_url))}" target="_blank" rel="noopener">Log on GitHub ↗</a>
     </span>`);
   const cancel = $("#run-cancel");
@@ -670,7 +671,7 @@ function renderRunDetail() {
     if (res.api_used != null) bits.push(`<span class="muted">· ${res.api_used} eBay calls</span>`);
     html += `<div class="run-sum">${bits.join("")}</div>`;
   } else if (!active && r.conclusion === "success") {
-    html += `<div class="run-sum muted">This run finished before the dashboard existed, or its results aren't published yet.</div>`;
+    html += `<div class="run-sum muted">This run finished before the dashboard existed, or its report isn't published yet.</div>`;
   }
   if (job) {
     const steps = job.steps.filter(s => !HIDDEN_STEPS.test(s.name));
@@ -724,6 +725,9 @@ function runBadges(r) {
   if (!b.length) b.push(`<span class="badge quiet">nothing new</span>`);
   return b.join("");
 }
+// "scheduled", "manual" (both GitHub) or "PC · Card Hunter"
+const runKind = r => r.event === "workflow_dispatch" ? "manual" : r.event === "schedule" ? "scheduled"
+  : r.event === "pc" ? `PC · ${r.tool || "run"}` : r.event;
 function recentRuns(hours = 24) { return (S.results || []).filter(r => Date.now() - Date.parse(r.started) < hours * 3600e3); }
 
 function renderResultList() {
@@ -744,7 +748,7 @@ function renderResultList() {
     const t = new Date(r.started), d = fmtDay(t);
     if (d !== day) { html += `<div class="rdate">${esc(d)}</div>`; day = d; }
     html += `<div class="ritem ${RS.sel === r.id ? "active" : ""}" data-res="${esc(r.id)}">
-      <div class="r1"><b>${esc(fmtClock(t))}</b><span class="muted">${r.event === "workflow_dispatch" ? "manual" : r.event === "schedule" ? "scheduled" : esc(r.event)}</span>${runBadges(r)}</div>
+      <div class="r1"><b>${esc(fmtClock(t))}</b><span class="muted">${esc(runKind(r))}</span>${runBadges(r)}</div>
       <div class="r2" title="${esc(r.info)}">${esc(r.info || "")}</div></div>`;
   }
   patch($("#rl-body"), html);
@@ -804,10 +808,10 @@ async function renderResults() {
   if (!(RS.pct === 0 || (RS.pct >= 10 && RS.pct < PCT_ANY))) RS.pct = 100;
   renderResultList();
   if (S.results == null) {
-    $("#rv-title").textContent = "Results";
+    $("#rv-title").textContent = "Reports";
     $("#rv-sub").textContent = "";
     patch($("#rv-filters"), "");
-    patch($("#rv-grid"), `<div class="empty" style="grid-column:1/-1"><div>Nothing published yet. The next run after this update puts its results here.</div></div>`);
+    patch($("#rv-grid"), `<div class="empty" style="grid-column:1/-1"><div>Nothing published yet. The next run puts its report here.</div></div>`);
     return;
   }
   if (!RS.sel) RS.sel = "__24h";
@@ -826,7 +830,7 @@ async function renderResults() {
     $("#rv-sub").textContent = `${plural(runs.length, "run")} combined`;
   } else {
     const r = runs[0], t = new Date(r.started);
-    $("#rv-title").textContent = `${fmtDay(t)} ${fmtClock(t)} · ${r.event === "workflow_dispatch" ? "manual run" : "scheduled run"}`;
+    $("#rv-title").textContent = `${fmtDay(t)} ${fmtClock(t)} · ${r.event === "pc" ? runKind(r) : runKind(r) + " run"}`;
     $("#rv-sub").textContent = [r.info, r.emailed ? "emailed" : "", r.failures?.length ? r.failures.join(" & ") + " failed" : ""].filter(Boolean).join(" · ");
   }
   patch($("#rv-filters"), FILTERS.map(([k, t, f]) => {
@@ -2040,6 +2044,17 @@ async function pollTick(manual) {
       }
       renderQuota();
       if (S.view === "results") renderResults();
+    } else {
+      // a report from the PC (sync_reports.py) arrives without a GitHub run
+      const had = S.results?.[0]?.id;
+      await loadResults();
+      const now = S.results?.[0]?.id;
+      if (now && had && now !== had) {
+        const r = S.results[0];
+        if (r.event === "pc") toast("New report from the PC", `${r.tool || ""}${r.matches || r.etb_listings ? " · " + (r.tool === "ETB Scanner" ? plural(r.etb_listings, "listing") : plural(r.matches, "match", "matches")) : ""}`);
+        RS.key = null;
+        if (S.view === "results") renderResults();
+      }
     }
     if (manual === true) toast("Up to date");
   } catch (e) {
