@@ -749,6 +749,8 @@ function normalize(kind, r, runId) {
     price, ship, shipKnown: ships.length > 0, total, market, pct, auction,
     bestOffer: opts.includes("BEST_OFFER"), bids: it.bidCount, end: auction && it.itemEndDate ? Date.parse(it.itemEndDate) : null,
     seller: it.seller?.username, feedback: it.seller?.feedbackPercentage, condition: it.condition,
+    // the card condition Card Hunter priced it by (NM ... DMG), when it read one
+    cond: kind === "hunt" ? r.condition || null : null,
   };
 }
 const FILTERS = [
@@ -824,7 +826,8 @@ function priceBits(x) {
   const sub = x.price == null ? "" : !x.shipKnown ? "+ shipping ?" : x.ship === 0 ? "free shipping" : `${money(x.price)} + ${money(x.ship)} ship`;
   let mk = "", cls = "";
   if (x.market) {
-    mk = `Market ${money(x.market)}` + (x.pct != null ? ` · ${x.pct}%${x.shipKnown ? "" : "+"} of market` : "");
+    mk = `${COND_NAMES[x.cond] ? COND_NAMES[x.cond] + " market" : "Market"} ${money(x.market)}` +
+      (x.pct != null ? ` · ${x.pct}%${x.shipKnown ? "" : "+"} of market` : "");
     cls = x.pct == null ? "" : x.pct <= 60 ? "deal" : x.pct <= 90 ? "good" : x.pct > 100 ? "over" : "";
   }
   return {head, sub, mk, cls};
@@ -1556,10 +1559,11 @@ async function renderSetCards() {
   CS.shown = list;
   patch($("#cs-cards"), shown.map(c => {
     const row = rowFor(c, m), on = catOn(c, row), changed = !PE && !!row && row.enabled !== row.saved;
+    const tip = PE ? (on ? "In the preset. Tap to take it out." : "Tap to add it to the preset.") : on ? "Hunting. Tap to stop." : "Tap to hunt this card.";
     return `<button class="ccard ${on ? "on" : ""} ${changed ? "changed" : ""}" data-key="${esc(c.key)}" data-id="${esc(c.id)}"
-        title="${esc(`${c.name} ${c.number}${c.variant ? " · " + c.variant : ""} · ${c.rarity}\n${PE ? (on ? "In the preset. Tap to take it out." : "Tap to add it to the preset.") : on ? "Hunting. Tap to stop." : "Tap to hunt this card."}`)}">
+        title="${esc(`${c.name} ${c.number}${c.variant ? " · " + c.variant : ""} · ${c.rarity}\nTap for a close-up with its prices by condition.`)}">
       <div class="art"><img loading="lazy" src="${esc(tcgImg(c.id))}" alt=""></div>
-      <span class="tick">${TICK}</span>
+      <span class="tick" title="${esc(tip)}">${TICK}</span>
       <div class="nm">${esc(c.name)}</div>
       <div class="meta"><span>${esc(c.number)}</span><span class="rar">${esc(c.rarity)}</span><span class="mk">${money(c.market)}</span></div>
       ${c.variant ? `<div class="var">${esc(c.variant)}</div>` : ""}
@@ -1622,13 +1626,123 @@ $("#cs-variants").onchange = e => { CS.variants = e.target.checked; saveCatalogV
 $("#cs-ntl").onchange = e => { CS.ntl = e.target.checked; saveCatalogView(); renderSetCards(); };
 $("#cs-rep").onchange = e => { CS.reprints = e.target.checked; saveCatalogView(); renderSetCards(); };
 $("#cs-status").onclick = e => { const b = e.target.closest("[data-status]"); if (b) { CS.status = b.dataset.status; renderSetCards(); } };
+// the tick hunts a card (or picks it for the preset); anywhere else on it opens the close-up
 $("#cs-cards").onclick = e => {
   const t = e.target.closest("[data-key]");
   if (!t) return;
   const c = CS.shown.find(x => x.key === t.dataset.key);
-  if (c && PE) presetPick([catKey(c, rowFor(c, mine()))], !t.classList.contains("on"));
-  else if (c) huntCatalog([c], !t.classList.contains("on"));
+  if (!c) return;
+  if (!e.target.closest(".tick")) openCard(c);
+  else if (PE) presetPick([catKey(c, rowFor(c, mine()))], !t.classList.contains("on"));
+  else huntCatalog([c], !t.classList.contains("on"));
 };
+
+// --- a card close up: TCGplayer's big picture and its prices by condition,
+// from conditions/<set>.json on the results branch (catalog.py's CONDITION
+// PRICES: each run refreshes the stalest, so none is more than a week old)
+const NM_ONLY = new Set(["Mega Evolution", "Scarlet & Violet"]);     // catalog.NM_ONLY_ERAS
+const CONDS = [["NM", "Near Mint"], ["LP", "Lightly Played"], ["MP", "Moderately Played"], ["HP", "Heavily Played"], ["DMG", "Damaged"]];
+const COND_NAMES = Object.fromEntries(CONDS);
+// card: the one open; i: where it is in the cards shown, which can change under it
+const CD = {card: null, i: -1, shards: new Map()};
+function cdSlug(c) { return c._slug || CS.slug; }
+function cdIndex() {
+  const at = CS.shown.findIndex(x => x.id === CD.card.id && x.key === CD.card.key);
+  if (at >= 0) CD.i = at;
+  return CD.i;
+}
+function cdPrices(c) {
+  const slug = cdSlug(c);
+  if (!CD.shards.has(slug)) CD.shards.set(slug, getRaw(`conditions/${slug}.json`, "results").then(JSON.parse)
+    .catch(e => {
+      if (e.status === 404) return {cards: {}};           // none fetched for this set yet
+      CD.shards.delete(slug);                             // try again next time
+      return {error: e.message};
+    }));
+  return CD.shards.get(slug).then(d => d.error ? d : (d.cards || {})[c.id] || null);
+}
+function openCard(c) {
+  CD.card = c; cdIndex();
+  $("#cd").classList.remove("hidden");
+  renderCardDetail();
+}
+function closeCard() { $("#cd").classList.add("hidden"); CD.card = null; }
+function condTable(p) {
+  if (p === undefined) return `<div class="cd-note">Loading prices by condition…</div>`;
+  if (p === null) return `<div class="cd-note">No prices by condition for this card yet. Each run fetches a few thousand cards' worth, so it'll be here within a day.</div>`;
+  if (p.error) return `<div class="cd-note">Couldn't load prices by condition: ${esc(p.error)}</div>`;
+  const printings = Object.keys(p.v || {}).sort((a, b) => /reverse/i.test(a) - /reverse/i.test(b) || a.localeCompare(b));
+  if (!printings.length) return `<div class="cd-note">TCGplayer has no sales of this card in the last month, so no prices by condition.</div>`;
+  const rows = CONDS.map(([code, name]) => `<tr><td>${name}</td>${printings.map(v => {
+    const x = (p.v[v] || {})[code];
+    return x ? `<td><b>${money(x[0])}</b><span class="n">${Number(x[1]).toLocaleString()} sold</span></td>` : `<td class="none">—</td>`;
+  }).join("")}</tr>`).join("");
+  const at = new Date(p.at + "T12:00:00");
+  return `<table class="cd-conds"><thead><tr><th>Condition</th>${printings.map(v => `<th>${esc(v)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>
+    <div class="cd-note">TCGplayer market price by condition, and copies sold there in the last 30 days · as of ${esc(isNaN(at) ? p.at : at.toLocaleDateString([], {year: "numeric", month: "short", day: "numeric"}))}</div>`;
+}
+async function renderCardDetail() {
+  const c = CD.card;
+  if (!c) return closeCard();
+  const st = CAT.bySlug.get(cdSlug(c)) || {};
+  const row = rowFor(c, mine()), on = catOn(c, row);
+  const n = CS.shown.length, i = cdIndex();
+  $("#cd-img").src = tcgImg(c.id, "in_1000x1000");
+  const act = PE ? (on ? "Take out of the preset" : "Add to the preset") : on ? "Stop hunting" : "Hunt this card";
+  const rule = NM_ONLY.has(st.era)
+    ? `Card Hunter prices ${esc(st.era)} cards as Near Mint whatever their condition: almost every one goes straight from the pack into a sleeve.`
+    : `Card Hunter compares each listing to the price for its condition, from the title or the condition the seller picked on eBay. A worn copy has to beat a worn copy's price.`;
+  const draw = p => {
+    if (CD.card !== c) return;                            // moved on meanwhile
+    $("#cd-info").innerHTML = `
+      <h2 id="cd-name">${esc(c.name)}</h2>
+      <div class="cd-sub">${[c.number, c.rarity, c.variant].filter(Boolean).map(esc).join(" · ")}</div>
+      <div class="cd-sub">${esc(c._set || st.name || "")}${st.era ? " · " + esc(st.era) : ""}${st.date ? " · " + esc(fmtRelease(st.date)) : ""}</div>
+      <div class="cd-mk"><b>${money(c.market)}</b><span class="muted">market${c.market != null ? " (Near Mint)" : ""}</span></div>
+      ${condTable(p)}
+      <div class="cd-note">${rule}</div>
+      <div class="cd-actions">
+        <button class="btn ${on ? "" : "primary"}" id="cd-hunt">${act}</button>
+        <a class="btn ghost" href="https://www.tcgplayer.com/product/${esc(c.id)}" target="_blank" rel="noopener">TCGplayer ↗</a>
+        <span class="spacer"></span>
+        <button class="btn ghost icon" id="cd-prev" title="Previous card (←)" ${i > 0 ? "" : "disabled"}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <span class="hint">${(i + 1).toLocaleString()} of ${n.toLocaleString()}</span>
+        <button class="btn ghost icon" id="cd-next" title="Next card (→)" ${i < n - 1 ? "" : "disabled"}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></button>
+      </div>`;
+  };
+  draw(undefined);
+  draw(await cdPrices(c));
+}
+function stepCard(d) {
+  const j = cdIndex() + d;
+  if (j >= 0 && j < CS.shown.length) { CD.card = CS.shown[j]; CD.i = j; renderCardDetail(); }
+}
+$("#cd-close").onclick = closeCard;
+$("#cd").addEventListener("click", e => {
+  if (e.target.id === "cd") return closeCard();
+  if (e.target.closest("#cd-prev")) return stepCard(-1);
+  if (e.target.closest("#cd-next")) return stepCard(1);
+  if (e.target.closest("#cd-hunt")) {
+    const c = CD.card, row = rowFor(c, mine()), on = catOn(c, row);
+    if (PE) presetPick([catKey(c, row)], !on); else huntCatalog([c], !on);
+    renderCardDetail();
+  }
+});
+document.addEventListener("keydown", e => {
+  if ($("#cd").classList.contains("hidden")) return;
+  if (e.key === "Escape") closeCard();
+  else if (e.key === "ArrowLeft") stepCard(-1);
+  else if (e.key === "ArrowRight") stepCard(1);
+});
+(function swipe() {
+  let x0 = null;
+  $("#cd").addEventListener("touchstart", e => { x0 = e.touches[0].clientX; }, {passive: true});
+  $("#cd").addEventListener("touchend", e => {
+    if (x0 == null) return;
+    const dx = e.changedTouches[0].clientX - x0; x0 = null;
+    if (Math.abs(dx) > 60) stepCard(dx < 0 ? 1 : -1);
+  }, {passive: true});
+})();
 function shownWhere(on) {
   const m = mine();
   return CS.shown.filter(c => { const r = rowFor(c, m); return !!(r && r.enabled) === on; });
