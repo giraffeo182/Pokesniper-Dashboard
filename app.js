@@ -915,9 +915,9 @@ window.addEventListener("beforeunload", e => { if (Cd.pending.size || SC.dirty |
 // (catalog_prices.json on the results branch, refreshed daily by the runs)
 const CAT = {sets: null, bySlug: new Map(), data: new Map(), ready: new Map(), all: null, allDone: null, error: "", market: new Map(), today: {}, todayAt: null};
 // modes: sets (every set) -> set (one), dex (every Pokemon) -> mon (one), mine
-const CS = {mode: "sets", slug: null, dex: null, q: "", gq: "", dq: "", gen: 0, rarity: "", status: "", variants: false, ntl: false, sort: "number", monSort: "number", shown: []};
+const CS = {mode: "sets", slug: null, dex: null, q: "", gq: "", dq: "", gen: 0, rarity: "", status: "", variants: false, ntl: false, reprints: false, sort: "number", monSort: "number", shown: []};
 Object.assign(CS, store.get("catalogView", {}), {q: "", gq: "", dq: "", slug: null, dex: null, shown: []});
-const saveCatalogView = () => store.set("catalogView", {mode: {set: "sets", mon: "dex"}[CS.mode] || CS.mode, gen: CS.gen, variants: CS.variants, ntl: CS.ntl, sort: CS.sort, monSort: CS.monSort});
+const saveCatalogView = () => store.set("catalogView", {mode: {set: "sets", mon: "dex"}[CS.mode] || CS.mode, gen: CS.gen, variants: CS.variants, ntl: CS.ntl, reprints: CS.reprints, sort: CS.sort, monSort: CS.monSort});
 const TICK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
 const fmtRelease = iso => new Date(iso + "T12:00:00").toLocaleDateString([], {month: "long", day: "numeric", year: "numeric"});
 
@@ -1139,9 +1139,23 @@ async function monCards(p) {
 }
 
 const catNum = c => { const m = /(\d+)/.exec(String(c.number)); return m ? +m[1] : 0; };
+// A set's cards with their Prize Pack, League and other stamped reprints
+// (catalog.py's "of") slotted in after the card they reprint and its own
+// pattern variants
+function withReprints(own, sets) {
+  const at = new Map(own.map((c, i) => [c.key, i])), after = new Map();
+  for (const d of sets) if (d) for (const c of d.cards) {
+    if (!at.has(c.of)) continue;
+    let i = at.get(c.of);
+    while (i + 1 < own.length && own[i + 1].number === own[i].number) i++;
+    if (!after.has(i)) after.set(i, []);
+    after.get(i).push({...c, _set: d.name, _rep: true});
+  }
+  return own.flatMap((c, i) => [c, ...(after.get(i) || [])]);
+}
 async function renderSetCards() {
   const global = CS.mode === "sets" && !!CS.gq, mon = CS.mode === "mon";
-  let cards;
+  let cards, st = null;
   if (global) {
     if (!CAT.all) $("#cs-cards").innerHTML = `<div class="empty">Loading every set…</div>`;
     const sets = await loadAllSets();
@@ -1156,7 +1170,7 @@ async function renderSetCards() {
     cards = await monCards(p);
     if (CS.mode !== "mon" || CS.dex !== p.dex) return;
   } else {
-    const st = CAT.bySlug.get(CS.slug);
+    st = CAT.bySlug.get(CS.slug);
     if (!st) { CS.mode = "sets"; return renderCatalog(); }
     $("#cs-title").innerHTML = (st.logo ? `<img src="${esc(safeUrl(st.logo))}" alt="">` : "") +
       `<div><b>${esc(st.name)}</b><div class="hint">${esc(st.era)} · ${esc(fmtRelease(st.date))} · ${plural(st.count, "card")}${st.code ? " · " + esc(st.code) : ""}</div></div>`;
@@ -1168,6 +1182,11 @@ async function renderSetCards() {
     }
     if (CS.mode !== "set" || CS.slug !== st.slug) return;
     cards = data.cards.map(c => ({...c, _set: data.name}));
+    if (CS.reprints && (st.reprinted_in || []).length) {
+      const more = await loadSets(st.reprinted_in);
+      if (CS.mode !== "set" || CS.slug !== st.slug) return;
+      cards = withReprints(cards, more);
+    }
   }
   const m = mine();
   const words = (global ? CS.gq : CS.q).toLowerCase().split(/\s+/).filter(Boolean);
@@ -1179,6 +1198,13 @@ async function renderSetCards() {
   $("#cs-ntl-l").classList.toggle("hidden", !nNtl);
   $("#cs-ntl").checked = CS.ntl;
   $("#cs-ntl-t").textContent = `Not tournament legal (${nNtl.toLocaleString()})`;
+  // on a set's page, the reprints of its cards from other groups; elsewhere
+  // every reprint. A reprint group's own page always shows its cards.
+  const isRep = c => st ? c._rep : !!c.of;
+  const nRep = st && !CS.reprints ? st.reprints || 0 : cards.filter(c => isRep(c) && (CS.variants || !c.variant) && (CS.ntl || !c.ntl)).length;
+  $("#cs-rep-l").classList.toggle("hidden", !nRep);
+  $("#cs-rep").checked = CS.reprints;
+  $("#cs-rep-t").textContent = `Reprints (${nRep.toLocaleString()})`;
   const rarities = [...new Set(cards.map(c => c.rarity).filter(Boolean))];
   if (CS.rarity && !rarities.includes(CS.rarity)) CS.rarity = "";
   $("#cs-rarity").innerHTML = [["", "All rarities"], ...rarities.map(r => [r, r])].map(([v, t]) =>
@@ -1195,7 +1221,7 @@ async function renderSetCards() {
 
   let list = cards.filter(c => {
     const row = rowFor(c, m), on = !!(row && row.enabled);
-    return (CS.variants || !c.variant) && (CS.ntl || !c.ntl) && (!CS.rarity || c.rarity === CS.rarity) && (!CS.status || (CS.status === "on") === on) &&
+    return (CS.variants || !c.variant) && (CS.ntl || !c.ntl) && (CS.reprints || !isRep(c)) && (!CS.rarity || c.rarity === CS.rarity) && (!CS.status || (CS.status === "on") === on) &&
       words.every(w => [c.name, c.number, c.rarity, c.variant || "", global || mon ? c._set : ""].join(" ").toLowerCase().includes(w));
   });
   const by = {
@@ -1218,7 +1244,7 @@ async function renderSetCards() {
       <div class="nm">${esc(c.name)}</div>
       <div class="meta"><span>${esc(c.number)}</span><span class="rar">${esc(c.rarity)}</span><span class="mk">${money(c.market)}</span></div>
       ${c.variant ? `<div class="var">${esc(c.variant)}</div>` : ""}
-      ${global || mon ? `<div class="from">${esc(c._set)}</div>` : ""}</button>`;
+      ${global || mon || c._rep ? `<div class="from">${esc(c._set)}</div>` : ""}</button>`;
   }).join("") || `<div class="empty">${mon && !cards.length ? "No cards of this Pokémon yet." : "No cards match."}</div>`);
 }
 
@@ -1275,6 +1301,7 @@ $("#cs-rarity").onchange = e => { CS.rarity = e.target.value; renderSetCards(); 
 $("#cs-sort").onchange = e => { CS[CS.mode === "mon" ? "monSort" : "sort"] = e.target.value; saveCatalogView(); renderSetCards(); };
 $("#cs-variants").onchange = e => { CS.variants = e.target.checked; saveCatalogView(); renderSetCards(); };
 $("#cs-ntl").onchange = e => { CS.ntl = e.target.checked; saveCatalogView(); renderSetCards(); };
+$("#cs-rep").onchange = e => { CS.reprints = e.target.checked; saveCatalogView(); renderSetCards(); };
 $("#cs-status").onclick = e => { const b = e.target.closest("[data-status]"); if (b) { CS.status = b.dataset.status; renderSetCards(); } };
 $("#cs-cards").onclick = e => {
   const t = e.target.closest("[data-key]");
