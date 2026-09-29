@@ -391,9 +391,9 @@ input::placeholder { color: var(--faint); }
          background: var(--panel-2); cursor: pointer; text-align: left; color: inherit; font: inherit; min-width: 0; }
 .stile:hover { border-color: var(--border-2); background: var(--panel-3); }
 .stile:focus-visible, .ccard:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.slogo { width: 128px; height: 104px; flex: none; border-radius: 9px; display: grid; place-items: center; padding: 10px;
+.slogo { width: 128px; height: 104px; flex: none; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 10px;
          background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--accent) 18%, var(--panel-3)), var(--panel-3)); }
-.slogo img { max-width: 100%; max-height: 100%; object-fit: contain; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
+.slogo img { max-width: 100%; max-height: 100%; min-width: 0; min-height: 0; object-fit: contain; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
 .slogo .code { font: 800 18px var(--sans); letter-spacing: .04em; color: var(--muted); }
 /* sets with no logo (McDonald's, trainer kits, reprint groups): slim tiles, under More sets */
 .era.more h3 .hint { font-weight: 400; margin-left: 6px; }
