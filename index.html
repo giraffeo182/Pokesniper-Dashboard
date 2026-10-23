@@ -649,6 +649,35 @@ input::placeholder { color: var(--faint); }
   <!-- ================= RUN ================= -->
   <section class="view" id="view-run">
     <div class="tools">
+      <div class="tool">
+        <div class="tool-head">
+          <div class="tool-icon" style="background:var(--accent-bg);color:var(--accent)">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l12.5-7.5z"/></svg>
+          </div>
+          <div><h3>Run now</h3><p>Starts a run on GitHub right away with the options below. About 5–10 minutes.</p></div>
+        </div>
+        <div class="tool-body">
+          <div class="checks"><label class="check"><input type="checkbox" id="rn-email" checked> Email results</label></div>
+        </div>
+        <div class="tool-foot">
+          <span class="cost" id="rn-cost"></span>
+          <button class="btn primary" id="rn-go">Run now</button>
+        </div>
+      </div>
+      <div class="tool">
+        <div class="tool-head">
+          <div class="tool-icon" style="background:var(--good-bg);color:var(--good)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>
+          </div>
+          <div><h3>Market prices</h3><p>TCGplayer's prices for Card Hunter's caps, Card Counter and the Cards tab. Each day's first run refreshes them too.</p></div>
+        </div>
+        <div class="tool-body">
+          <div class="prices-line">
+            <span class="hint" id="rn-prices-age"></span>
+            <button class="btn sm" data-refresh-prices title="Fetch today's TCGplayer market prices now, for Card Hunter, Card Counter and the Cards tab. Free, no eBay calls; takes a minute or two on GitHub.">Refresh prices</button>
+          </div>
+        </div>
+      </div>
       <div class="tool" id="rn-etb-tool">
         <div class="tool-head">
           <div class="tool-icon" style="background:var(--good-bg);color:var(--good)">
@@ -703,7 +732,7 @@ input::placeholder { color: var(--faint); }
             <div class="field" title="Where you'd ship to, so eBay can price calculated shipping. Saved for every run.">
               <label for="rn-zip">Ship to ZIP</label><input type="text" id="rn-zip" inputmode="numeric" maxlength="5" placeholder="e.g. 10001" autocomplete="postal-code"></div>
           </div>
-          <div class="row" style="align-items:flex-end;flex-wrap:wrap">
+          <div class="row" style="align-items:flex-end">
             <div class="field" style="flex:0 0 118px" title="Cap each card at this share of its TCGplayer market price, shipping and sales tax included. 80 = only listings at 80% of market or less.">
               <label for="rn-pct">% of market</label>
               <div class="suffix"><input type="number" id="rn-pct" min="1" max="500" step="5" inputmode="numeric"><span>%</span></div>
@@ -711,10 +740,6 @@ input::placeholder { color: var(--faint); }
             <div class="field" style="flex:0 0 118px" title="Your sales tax rate (state + local). eBay adds it at checkout on the item and shipping, so it's counted into the cap, the price shown and the % of market. Saved for every run; 0 leaves tax out.">
               <label for="rn-tax">Sales tax</label>
               <div class="suffix"><input type="number" id="rn-tax" min="0" max="20" step="0.25" placeholder="0" inputmode="decimal"><span>%</span></div>
-            </div>
-            <div class="prices-line" style="flex:1 0 220px">
-              <span class="hint" id="rn-prices-age"></span>
-              <button class="btn ghost sm" data-refresh-prices title="Fetch today's TCGplayer market prices now, for Card Hunter, Card Counter and the Cards tab. Free, no eBay calls; takes a minute or two on GitHub.">Refresh prices</button>
             </div>
           </div>
           <div class="notice hidden" id="rn-zip-notice">Set your ZIP so shipping gets priced. Without it, most listings show “shipping ?” and slip past the price cap.</div>
@@ -773,21 +798,6 @@ input::placeholder { color: var(--faint); }
           <span class="hint">These start as your usual options from the Settings tab and only change this run. The ZIP, languages, conditions and graded slabs are saved for every run.</span>
         </div>
         <div class="tool-foot"><span class="cost" id="rn-hunter-cost"></span></div>
-      </div>
-      <div class="tool">
-        <div class="tool-head">
-          <div class="tool-icon" style="background:var(--accent-bg);color:var(--accent)">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l12.5-7.5z"/></svg>
-          </div>
-          <div><h3>Run now</h3><p>Starts a run on GitHub right away with the options above. About 5–10 minutes.</p></div>
-        </div>
-        <div class="tool-body">
-          <div class="checks"><label class="check"><input type="checkbox" id="rn-email" checked> Email results</label></div>
-        </div>
-        <div class="tool-foot">
-          <span class="cost" id="rn-cost"></span>
-          <button class="btn primary" id="rn-go">Run now</button>
-        </div>
       </div>
       <div class="tool">
         <div class="tool-head">
