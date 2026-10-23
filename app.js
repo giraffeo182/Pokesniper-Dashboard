@@ -783,7 +783,8 @@ function normalize(kind, r, runId) {
   const ship = ships.length ? Math.min(...ships) : null;
   const tax = price == null ? 0 : taxOn(price, ship);
   const total = price == null ? null : Math.round((price + (ship || 0) + tax) * 100) / 100;
-  const market = kind === "hunt" ? num(r.market) : null;
+  // an ETB listing has one only when it's stamped: the stamped card's price
+  const market = num(r.market);
   const pct = total != null && market ? Math.round(100 * total / market) : null;
   const opts = it.buyingOptions || [];
   const auction = opts.includes("AUCTION");
@@ -860,8 +861,9 @@ async function renderResults() {
   $("#rv-sort").value = RS.sort;
   const f = (FILTERS.find(x => x[0] === RS.filter) || FILTERS[0])[2];
   const words = RS.q.toLowerCase().split(/\s+/).filter(Boolean);
-  // a listing with no market price has nothing to compare, so it stays
-  const underPct = x => !RS.pct || x.pct == null || x.pct <= RS.pct;
+  // a listing with no market price has nothing to compare, so it stays;
+  // so does a stamped one, the rarest find there is
+  const underPct = x => !RS.pct || x.pct == null || x.stamped || x.pct <= RS.pct;
   renderPctSlider();
   RS.shown = RS.items.filter(f).filter(underPct)
     .filter(x => words.every(w => (x.card + " " + x.title).toLowerCase().includes(w))).sort(SORTS[RS.sort]);
@@ -881,16 +883,21 @@ function priceBits(x) {
   const sub = x.price == null ? "" :
     !x.shipKnown ? (tax ? `${money(x.price)}${tax} + shipping ?` : "+ shipping ?") :
     x.ship === 0 ? (tax ? `${money(x.price)}${tax} · free shipping` : "free shipping") : `${money(x.price)} + ${money(x.ship)} ship${tax}`;
-  let mk = "", cls = "";
+  let mk = "", cls = "", pcts = null;
   if (x.market) {
-    mk = `${COND_NAMES[x.cond] ? COND_NAMES[x.cond] + " market" : "Market"} ${money(x.market)}` +
-      (x.pct != null ? ` · ${x.pct}%${x.shipKnown ? "" : "+"} of market` : "");
+    mk = `${x.stamped ? "Stamped market" : COND_NAMES[x.cond] ? COND_NAMES[x.cond] + " market" : "Market"} ${money(x.market)}`;
     cls = x.pct == null ? "" : x.pct <= 60 ? "deal" : x.pct <= 90 ? "good" : x.pct > 100 ? "over" : "";
+    // the same three as card_hunter.market_pcts: all-in, item + shipping, the item alone
+    const of = v => `${Math.round(100 * v / x.market)}%`;
+    if (x.price != null) pcts = [[x.pct + "%" + (x.shipKnown ? "" : "+"), "all-in"],
+      [x.shipKnown ? of(x.price + x.ship) : "?", "w/ ship"], [of(x.price), "item only"]];
   } else if (x.grade) {
     mk = `${x.grade} slab · no graded price`;
   }
-  return {head, sub, mk, cls};
+  return {head, sub, mk, cls, pcts};
 }
+const PCT_TIP = () => `% of market: all-in = item + shipping${shared().tax ? ` + ${shared().tax}% sales tax` : " (no sales tax set)"}; w/ ship = item + shipping; item only = the price alone`;
+const pctRow = p => p.pcts ? `<div class="mpct" title="${esc(PCT_TIP())}">${p.pcts.map(([v, l]) => `<span><b>${esc(v)}</b>${esc(l)}</span>`).join("")}</div>` : "";
 function kindText(x) {
   if (!x.auction) return "Buy It Now" + (x.bestOffer ? " · offers" : "");
   let s = "Auction";
@@ -915,6 +922,7 @@ function listingCard(x, i) {
       <div class="tt" title="${esc(x.title)}">${esc(x.title)}</div>
       <div class="pr"><b>${esc(p.head)}</b><small>${esc(p.sub)}</small></div>
       ${p.mk ? `<div class="mk ${p.cls}">${esc(p.mk)}</div>` : ""}
+      ${pctRow(p)}
       <div class="ft">${scoreBadge(x)}<span>${esc(kindText(x))}</span></div>
     </div></div>`;
 }
@@ -955,6 +963,7 @@ function renderReview() {
   refImg.src = ref;
   $("#rv-info").innerHTML = `<span class="pr"><b>${esc(p.head)}</b> <span style="color:#8e96a6">${esc(p.sub)}</span></span>
     ${p.mk ? `<span class="mk ${p.cls}">${esc(p.mk)}</span>` : ""}
+    ${p.pcts ? `<span style="color:#8e96a6">${p.pcts.map(([v, l]) => `<b style="color:#e7e9ee">${esc(v)}</b> ${esc(l)}`).join(" · ")}</span>` : ""}
     ${scoreBadge(x)}<span style="color:#8e96a6">${esc(kindText(x))}</span>
     ${x.seller ? `<span style="color:#8e96a6">Seller ${esc(x.seller)}${x.feedback ? ` (${esc(x.feedback)}%)` : ""}</span>` : ""}
     <span style="flex-basis:100%;color:#c9ced8">${esc(x.title)}</span>
