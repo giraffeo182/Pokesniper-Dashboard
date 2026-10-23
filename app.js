@@ -141,10 +141,11 @@ async function getFile(path, ref = "main") {
 async function getRaw(path, ref) { return gh(contentsPath(path, ref), {raw: true}); }
 
 /* Read-modify-write one file on main. mutate(text) returns the new text;
- * on a conflict (someone else saved first) it re-reads and re-applies once. */
+ * on a conflict (someone else saved first) it re-reads and re-applies once.
+ * A file that isn't there yet is mutate("") and gets created. */
 async function saveFile(path, mutate, message) {
   for (let attempt = 0; ; attempt++) {
-    const cur = await getFile(path);
+    const cur = await getFile(path).catch(e => { if (e.status === 404) return {text: "", sha: undefined}; throw e; });
     const next = mutate(cur.text);
     if (next === cur.text) return cur;
     try {
@@ -247,7 +248,7 @@ const scheduledCalls = cards => (scheduledOn("hunter") ? callsPerRun(cards, fals
 
 /* Average billed minutes of recent successful runs, else a guess from card count */
 function minutesPerRun() {
-  const done = S.actions.filter(r => r.status === "completed" && r.conclusion === "success" && r.run_started_at).slice(0, 10);
+  const done = S.actions.filter(r => !isPricesRun(r) && r.status === "completed" && r.conclusion === "success" && r.run_started_at).slice(0, 10);
   if (done.length) {
     const avg = done.reduce((n, r) => n + (Date.parse(r.updated_at) - Date.parse(r.run_started_at)) / 60000, 0) / done.length;
     return Math.max(1, avg);
@@ -304,7 +305,8 @@ function show(view) {
   $$("#nav button").forEach(b => b.classList.toggle("active", b.dataset.view === view));
   $$(".view").forEach(v => v.classList.toggle("hidden", v.id !== "view-" + view));
   store.set("view", view);
-  ({run: renderRun, results: renderResults, cards: () => { renderCards(); loadCatalog(); }, schedule: renderSchedule, settings: renderSettings}[view] || (() => {}))();
+  ({run: renderRun, results: renderResults, cards: () => { renderCards(); loadCatalog(); },
+    counter: () => { renderCounter(); loadCatalog(); loadCounter(); ccLookup(); }, schedule: renderSchedule, settings: renderSettings}[view] || (() => {}))();
 }
 $("#nav").onclick = e => { const b = e.target.closest("[data-view]"); if (b) show(b.dataset.view); };
 document.addEventListener("click", e => { const b = e.target.closest("[data-goto]"); if (b) show(b.dataset.goto); });
@@ -403,13 +405,13 @@ const SV = {want: null, note: "", timer: null};
 function shared() {
   if (SV.want) return SV.want;
   const s = S.settings || {};
-  return {zip: s.ship_to_zip || "", off: new Set(s.exclude_languages || []), condOff: new Set(s.exclude_conditions || []),
+  return {zip: s.ship_to_zip || "", tax: num(s.sales_tax_pct) ?? 0, off: new Set(s.exclude_languages || []), condOff: new Set(s.exclude_conditions || []),
           graded: {include_graded: s.include_graded === true, etb_include_graded: s.etb_include_graded === true},
           etbOff: new Set(s.etb_off || [])};
 }
 function changeShared(fn, note) {
   const w = shared();
-  SV.want = {zip: w.zip, off: new Set(w.off), condOff: new Set(w.condOff), graded: {...w.graded}, etbOff: new Set(w.etbOff)};
+  SV.want = {zip: w.zip, tax: w.tax, off: new Set(w.off), condOff: new Set(w.condOff), graded: {...w.graded}, etbOff: new Set(w.etbOff)};
   fn(SV.want);
   SV.note = SV.note && SV.note !== note ? "run settings" : note;
   clearTimeout(SV.timer);
@@ -425,6 +427,7 @@ async function flushShared() {
     const r = await saveFile("settings.json", text => {
       const d = JSON.parse(text || "{}");
       d.ship_to_zip = w.zip;
+      d.sales_tax_pct = w.tax;
       d.exclude_languages = LANGS.filter(l => w.off.has(l));
       d.exclude_conditions = CONDS.map(([c]) => c).filter(c => w.condOff.has(c));
       d.include_graded = w.graded.include_graded;
@@ -445,6 +448,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && SV.
 function renderRunShared() {
   const w = shared();
   if (document.activeElement?.id !== "rn-zip") $("#rn-zip").value = w.zip;
+  if (document.activeElement?.id !== "rn-tax") $("#rn-tax").value = w.tax || "";
   $("#rn-zip-notice").classList.toggle("hidden", !!w.zip);
   const cap = l => l[0].toUpperCase() + l.slice(1);
   patch($("#rn-langs"), `<label class="dd-item" title="Always included"><input type="checkbox" checked disabled> English</label>` +
@@ -458,12 +462,18 @@ function renderRunShared() {
   // graded slabs: one tick per tool, left out unless ticked
   $$("[data-graded]").forEach(b => b.checked = w.graded[b.dataset.graded]);
   $("#cond-dd-btn").classList.toggle("none", !condsOn.length);
-  const at = S.prices?.updated ? new Date(S.prices.updated) : null;
-  $("#rn-prices-age").textContent = at && !isNaN(at)
-    ? `Market prices from ${at.toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})}. Each day's first run refreshes them.`
-    : "No market prices yet. The next run fetches them.";
+  renderPricesAge();
   renderPromos();
 }
+// what eBay adds at checkout, on the item and its shipping (card_hunter.sales_tax)
+const taxOn = (price, ship) => Math.round((price + (ship || 0)) * (shared().tax || 0)) / 100;
+$("#rn-tax").addEventListener("change", e => {
+  const v = e.target.value.trim() === "" ? 0 : num(e.target.value);
+  if (v == null || v < 0 || v > 20) { toast("Sales tax must be 0 to 20%", "", "bad"); e.target.value = shared().tax || ""; return; }
+  if (v === shared().tax) return;
+  changeShared(w => { w.tax = v; }, v ? `sales tax ${v}%` : "leave out sales tax");
+  RS.key = null;                        // the Reports tab's prices include it
+});
 $("#rn-zip").addEventListener("change", e => {
   const v = e.target.value.trim();
   if (v && !/^\d{5}$/.test(v)) { toast("ZIP must be 5 digits", "", "bad"); e.target.value = shared().zip; return; }
@@ -567,7 +577,7 @@ $("#rn-go").onclick = async () => {
     for (let i = 0; i < 12 && !found; i++) {
       await sleep(i ? 2500 : 1500);
       await loadActions();
-      found = S.actions.find(r => !known.has(r.id) && r.event === "workflow_dispatch" && Date.parse(r.created_at) > clicked - 60000);
+      found = S.actions.find(r => !known.has(r.id) && r.event === "workflow_dispatch" && !isPricesRun(r) && Date.parse(r.created_at) > clicked - 60000);
     }
     if (found) { S.selectedRun = found.id; toast("Run started", "Watch it here, or close the page — it runs on GitHub either way.", "good"); }
     else toast("Run requested", "GitHub hasn't listed it yet; it'll appear here shortly.");
@@ -583,13 +593,13 @@ function runDot(r) {
   if (r.status !== "completed") return "run";
   return r.conclusion === "success" ? "ok" : r.conclusion === "cancelled" ? "stop" : "fail";
 }
-const runLabel = r => r.event === "workflow_dispatch" ? "Manual" : r.event === "schedule" ? "Scheduled" : r.event;
+const runLabel = r => isPricesRun(r) ? "Refresh prices" : r.event === "workflow_dispatch" ? "Manual" : r.event === "schedule" ? "Scheduled" : r.event;
 const runTime = r => new Date(r.run_started_at || r.created_at);
 const resultFor = r => (S.results || []).find(x => x.run_id === r.id);
 
-function typicalSeconds() {
-  const done = S.actions.filter(r => r.status === "completed" && r.conclusion === "success" && r.run_started_at).slice(0, 8);
-  if (!done.length) return 420;
+function typicalSeconds(prices = false) {
+  const done = S.actions.filter(r => isPricesRun(r) === prices && r.status === "completed" && r.conclusion === "success" && r.run_started_at).slice(0, 8);
+  if (!done.length) return prices ? 120 : 420;
   return done.reduce((n, r) => n + (Date.parse(r.updated_at) - Date.parse(r.run_started_at)) / 1000, 0) / done.length;
 }
 
@@ -646,11 +656,11 @@ function renderRunDetail() {
   const state = active ? (r.status === "queued" || r.status === "waiting" ? "Waiting to start" : "Running") :
     {success: "Finished", failure: "Failed", cancelled: "Cancelled", timed_out: "Timed out"}[r.conclusion] || r.conclusion;
   const res = resultFor(r);
-  const typical = typicalSeconds();
+  const typical = typicalSeconds(isPricesRun(r));
   const bar = active && r.status === "in_progress"
     ? `<div class="meter"><div style="width:${Math.min(95, 100 * elapsed / typical).toFixed(0)}%"></div></div>` : "";
   patch($("#run-status"), `<span class="dot ${runDot(r)}"></span>
-    <span class="title">${esc(runLabel(r))} run #${r.run_number} · ${esc(fmtDay(t))} ${esc(fmtClock(t))}</span>
+    <span class="title">${esc(runLabel(r))}${isPricesRun(r) ? "" : " run"} #${r.run_number} · ${esc(fmtDay(t))} ${esc(fmtClock(t))}</span>
     <span class="muted">${esc(state)} · ${fmtDur(elapsed)}${active && r.status === "in_progress" ? ` of ~${fmtDur(typical)}` : ""}</span>
     ${bar}
     <span class="actions">
@@ -676,6 +686,8 @@ function renderRunDetail() {
     bits.push(`<span class="muted">${res.emailed ? "Emailed" : res.email_error ? "Email failed: " + esc(res.email_error) : (res.matches || res.stamped) ? "Not emailed" : "Nothing new, no email"}</span>`);
     if (res.api_used != null) bits.push(`<span class="muted">· ${res.api_used} eBay calls</span>`);
     html += `<div class="run-sum">${bits.join("")}</div>`;
+  } else if (!active && r.conclusion === "success" && isPricesRun(r)) {
+    html += `<div class="run-sum muted">Today's prices are in: Card Hunter, Card Counter and the Cards tab use them now.</div>`;
   } else if (!active && r.conclusion === "success") {
     html += `<div class="run-sum muted">This run finished before the dashboard existed, or its report isn't published yet.</div>`;
   }
@@ -699,7 +711,7 @@ function renderRunDetail() {
 function stepName(n) {
   return {"Scan and email": "Scan eBay, check photos, email", "Publish results for the dashboard": "Publish results for this dashboard",
           "Restore seen lists from the last run": "Load the seen lists", "Save seen lists for the next run": "Save the seen lists",
-          "Keep the reports and logs for 14 days": "Keep the reports and logs"}[n] || n;
+          "Keep the reports and logs for 14 days": "Keep the reports and logs", "Refresh market prices": "Fetch today's market prices"}[n] || n;
 }
 document.addEventListener("click", e => {
   const b = e.target.closest("[data-open-result]");
@@ -769,7 +781,8 @@ function normalize(kind, r, runId) {
   const price = num(it.price?.value) ?? num(it.currentBidPrice?.value);
   const ships = (it.shippingOptions || []).map(o => num(o.shippingCost?.value)).filter(v => v != null);
   const ship = ships.length ? Math.min(...ships) : null;
-  const total = price == null ? null : Math.round((price + (ship || 0)) * 100) / 100;
+  const tax = price == null ? 0 : taxOn(price, ship);
+  const total = price == null ? null : Math.round((price + (ship || 0) + tax) * 100) / 100;
   const market = kind === "hunt" ? num(r.market) : null;
   const pct = total != null && market ? Math.round(100 * total / market) : null;
   const opts = it.buyingOptions || [];
@@ -784,7 +797,7 @@ function normalize(kind, r, runId) {
     score: num(r.score), strong: kind === "hunt" && (num(r.score) || 0) >= Math.min(95, minScore + 15),
     verdict: kind === "etb" ? (r.verdict || {}) : null,
     stamped: kind === "etb" && r.verdict?.verdict === "stamped",
-    price, ship, shipKnown: ships.length > 0, total, market, pct, auction,
+    price, ship, tax, shipKnown: ships.length > 0, total, market, pct, auction,
     bestOffer: opts.includes("BEST_OFFER"), bids: it.bidCount, end: auction && it.itemEndDate ? Date.parse(it.itemEndDate) : null,
     seller: it.seller?.username, feedback: it.seller?.feedbackPercentage, condition: it.condition,
     // the card condition Card Hunter priced it by (NM ... DMG), when it read one
@@ -863,7 +876,11 @@ async function renderResults() {
 }
 function priceBits(x) {
   const head = x.total == null ? "?" : money(x.total);
-  const sub = x.price == null ? "" : !x.shipKnown ? "+ shipping ?" : x.ship === 0 ? "free shipping" : `${money(x.price)} + ${money(x.ship)} ship`;
+  // the same breakdown as card_hunter.price_text
+  const tax = x.tax ? ` + ${money(x.tax)} tax` : "";
+  const sub = x.price == null ? "" :
+    !x.shipKnown ? (tax ? `${money(x.price)}${tax} + shipping ?` : "+ shipping ?") :
+    x.ship === 0 ? (tax ? `${money(x.price)}${tax} · free shipping` : "free shipping") : `${money(x.price)} + ${money(x.ship)} ship${tax}`;
   let mk = "", cls = "";
   if (x.market) {
     mk = `${COND_NAMES[x.cond] ? COND_NAMES[x.cond] + " market" : "Market"} ${money(x.market)}` +
@@ -1306,7 +1323,7 @@ async function loadCatalog() {
     const [setsText, today] = await Promise.all([getRaw("catalog/sets.json", "main"),
       getRaw("catalog_prices.json", "results").then(JSON.parse).catch(() => null)]);
     CAT.sets = JSON.parse(setsText);
-    if (today && today.prices) { CAT.today = today.prices; CAT.todayAt = today.updated; }
+    if (today && today.prices) { CAT.today = today.prices; CAT.todayAt = today.updated; CAT.todaySrc = today.source_updated; }
     for (const era of CAT.sets.eras || []) for (const st of era.sets) CAT.bySlug.set(st.slug, {...st, era: era.name});
     // prices for cards added since the last run live in their set's file
     const table = S.prices?.cards || {};
@@ -1317,6 +1334,7 @@ async function loadCatalog() {
     CAT.sets = {eras: []};
   } finally { CAT.loading = false; }
   renderCatalog();
+  renderPricesAge();             // Card Counter's "Prices updated" is the catalog's
 }
 async function loadSet(slug) {
   if (!CAT.data.has(slug)) CAT.data.set(slug, getRaw(`catalog/sets/${slug}.json`, "main").then(JSON.parse)
@@ -1789,6 +1807,7 @@ async function renderCardDetail() {
     : `Card Hunter compares each listing to the price for its condition, from the title or the condition the seller picked on eBay. A worn copy has to beat a worn copy's price.`;
   const draw = p => {
     if (CD.card !== c) return;                            // moved on meanwhile
+    const own = ccOwned(c.key);
     $("#cd-info").innerHTML = `
       <h2 id="cd-name">${esc(c.name)}</h2>
       <div class="cd-sub">${[c.number, c.rarity, c.variant].filter(Boolean).map(esc).join(" · ")}</div>
@@ -1798,6 +1817,7 @@ async function renderCardDetail() {
       <div class="cd-note">${rule}</div>
       <div class="cd-actions">
         <button class="btn ${on ? "" : "primary"}" id="cd-hunt">${act}</button>
+        <button class="btn" id="cd-own" title="${own ? "See it in Card Counter" : "Add it to Card Counter: the cards you own, with what you paid"}">${own ? `In Card Counter · ${own.qty}` : "+ Card Counter"}</button>
         <a class="btn ghost" href="https://www.tcgplayer.com/product/${esc(c.id)}" target="_blank" rel="noopener">TCGplayer ↗</a>
         <span class="spacer"></span>
         <button class="btn ghost icon" id="cd-prev" title="Previous card (←)" ${i > 0 ? "" : "disabled"}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 6l-6 6 6 6"/></svg></button>
@@ -1817,6 +1837,11 @@ $("#cd").addEventListener("click", e => {
   if (e.target.id === "cd") return closeCard();
   if (e.target.closest("#cd-prev")) return stepCard(-1);
   if (e.target.closest("#cd-next")) return stepCard(1);
+  if (e.target.closest("#cd-own")) {
+    const c = CD.card;
+    if (ccOwned(c.key)) { closeCard(); show("counter"); return loadCounter().then(() => ccFocus(c.key, "qty")); }
+    return ccAdd({...c, _set: c._set || CAT.bySlug.get(cdSlug(c))?.name}, false).then(renderCardDetail);
+  }
   if (e.target.closest("#cd-hunt")) {
     const c = CD.card, row = rowFor(c, mine()), on = catOn(c, row);
     if (PE) presetPick([catKey(c, row)], !on); else huntCatalog([c], !on);
@@ -1855,6 +1880,379 @@ $("#cs-off").onclick = () => {
   if (cards.length > 10 && !confirm(`Stop hunting all ${cards.length} cards shown?`)) return;
   huntCatalog(cards, false);
 };
+
+/* ================================================================== CARD COUNTER */
+// The cards you own, in collection.json on main. The PC dashboard's Card
+// Counter tab edits the same file (dashboard.py):
+//   {"show_pct": 80, "cards": [{"key": catalog key, "qty": 2, "paid": 12.5}]}
+// "paid" is per copy, shipping included. Names, sets and today's market
+// prices come from the catalog; a card show dealer would likely pay market
+// x show_pct. Newest added first in the file.
+// info: key -> {card: the catalog's card, set: its set's name}
+const CC = {data: null, error: "", loading: null, info: new Map(), sort: store.get("ccSort", "added"),
+            hits: [], idx: 0, flat: null, src: null, timer: null, saving: false, again: false, note: ""};
+const ccPct = () => (CC.data?.show_pct ?? 80) / 100;
+const ccOwned = key => (CC.data?.cards || []).find(c => c.key === key);
+const cents = v => Math.round(v * 100) / 100;
+const XMARK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>`;
+function signed(v) {
+  if (v == null) return "—";
+  const r = cents(v);
+  return `<span class="${r > 0 ? "up" : r < 0 ? "down" : ""}">${r > 0 ? "+" : r < 0 ? "−" : ""}$${Math.abs(r).toFixed(2)}</span>`;
+}
+// what's saved plus what the catalog says about it (found: null = not looked up yet)
+function ccCard(o) {
+  const i = CC.info.get(o.key), c = i?.card;
+  return {...o, found: i ? !!c : null, name: c?.name || o.key, number: c?.number || "", rarity: c?.rarity || "",
+          variant: c?.variant, set: i?.set || "", id: c?.id, market: c ? num(c.market) : null};
+}
+function ccCalc(c) {
+  const show = c.market != null ? cents(c.market * ccPct()) : null;
+  const paid = c.paid != null ? c.paid * c.qty : null;
+  return {show, paid,
+    value: c.market != null ? c.market * c.qty : null,
+    showValue: show != null ? show * c.qty : null,
+    gain: show != null && paid != null ? show * c.qty - paid : null,
+    mgain: c.market != null && paid != null ? c.market * c.qty - paid : null};
+}
+async function loadCounter() {
+  if (CC.data) return CC.data;
+  if (!CC.loading) CC.loading = (async () => {
+    try {
+      const text = await getRaw("collection.json", "main").catch(e => { if (e.status === 404) return ""; throw e; });
+      const d = text ? JSON.parse(text) : {};
+      CC.data = {show_pct: num(d.show_pct) ?? 80,
+        cards: (Array.isArray(d.cards) ? d.cards : []).filter(c => c && typeof c.key === "string")
+          .map(c => ({key: c.key, qty: Number.isInteger(+c.qty) && +c.qty >= 0 ? +c.qty : 1, paid: num(c.paid)}))};
+      CC.error = "";
+    } catch (e) {
+      CC.error = e.message;
+    } finally {
+      CC.loading = null;
+    }
+    if (S.view === "counter") renderCounter();
+    if (CC.data) ccLookup();
+    return CC.data;
+  })();
+  return CC.loading;
+}
+// each card's name, set and price, from its set's file in the catalog
+async function ccLookup() {
+  const keys = (CC.data?.cards || []).map(c => c.key).filter(k => !CC.info.has(k));
+  if (!keys.length) return;
+  await catalogReady();
+  const slugs = [...new Set(keys.map(setOfKey).filter(Boolean))];
+  const sets = await loadSets(slugs);
+  const byKey = new Map(), loaded = new Set();
+  sets.forEach((d, i) => { if (d) { loaded.add(slugs[i]); for (const c of d.cards) byKey.set(c.key, {card: c, set: d.name}); } });
+  // a set that didn't load is tried again next time, not called "not found"
+  for (const k of keys) if (byKey.has(k) || !loaded.has(setOfKey(k))) CC.info.set(k, byKey.get(k) || {card: null, set: ""});
+  if (S.view === "counter") renderCounter();
+}
+function ccNums(c) {
+  const x = ccCalc(c), pct = Math.round(ccPct() * 1000) / 10;
+  const profit = c.paid == null ? `<span class="sub">Enter what you paid</span>`
+    : x.gain == null ? "<b>—</b>" : `<b>${signed(x.gain)}</b><span class="sub">at market ${signed(x.mgain)}</span>`;
+  return `<div title="TCGplayer market price, Near Mint"><span class="l">Market each</span><b>${money(c.market)}</b></div>
+    <div class="show" title="What a card show dealer would likely pay: market × ${pct}%"><span class="l">Card show each</span><b>${money(x.show)}</b></div>
+    <div title="Market price × how many you have"><span class="l">Total value</span><b>${money(x.value)}</b>${c.qty > 1 && x.showValue != null ? `<span class="sub">show ${money(x.showValue)}</span>` : ""}</div>
+    <div title="Selling every copy at the card show price, minus what you paid for them"><span class="l">Profit at a show</span>${profit}</div>`;
+}
+function ccRow(c) {
+  const img = c.id ? `<img loading="lazy" src="${tcgImg(c.id)}" alt="">` : `<div class="noimg"></div>`;
+  const sub = [c.number, c.set, c.variant].filter(Boolean).map(esc).join(" · ");
+  const link = c.id ? `${sub ? " · " : ""}<a href="https://www.tcgplayer.com/product/${esc(c.id)}" target="_blank" rel="noopener">TCGplayer ↗</a>` : "";
+  return `<div class="cc-row" data-cc="${esc(c.key)}">${img}
+    <div class="cc-main">
+      <div class="cc-name">${esc(c.found === null ? "Loading…" : c.name)}${c.found === false ? ` <span class="tag" title="This card isn't in the catalog any more, so it has no price">not found</span>` : ""}</div>
+      <div class="cc-sub">${sub}${link}</div>
+      <div class="cc-edit">
+        <span class="cc-qty"><button data-qty="-1" title="One fewer" aria-label="One fewer">−</button><input type="number" min="1" step="1" inputmode="numeric" value="${c.qty}" data-f="qty" aria-label="How many you have"><button data-qty="1" title="One more" aria-label="One more">+</button></span>
+        <label class="cc-paid" title="What you paid for one copy on eBay, shipping included. Bought copies at different prices? Put the average."><span>$</span><input type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="${c.paid ?? ""}" data-f="paid" aria-label="What you paid for one">paid each</label>
+      </div>
+    </div>
+    <div class="cc-nums" data-nums>${ccNums(c)}</div>
+    <button class="btn ghost icon" data-cc-del title="Take out of Card Counter">${XMARK}</button></div>`;
+}
+function ccSorted() {
+  const list = CC.data.cards.map(ccCard);
+  const by = {
+    added: null,
+    name: (a, b) => a.name.localeCompare(b.name) || catNum(a) - catNum(b),
+    set: (a, b) => (a.set || "").localeCompare(b.set || "") || catNum(a) - catNum(b),
+    "value-desc": (a, b) => (ccCalc(b).value ?? -1) - (ccCalc(a).value ?? -1),
+    "gain-desc": (a, b) => (ccCalc(b).gain ?? -1e9) - (ccCalc(a).gain ?? -1e9),
+    "gain-asc": (a, b) => (ccCalc(a).gain ?? 1e9) - (ccCalc(b).gain ?? 1e9),
+  }[CC.sort];
+  return by ? list.sort(by) : list;
+}
+function renderCounterStats() {
+  const cards = CC.data.cards.map(ccCard), pct = Math.round(ccPct() * 1000) / 10;
+  let copies = 0, paid = 0, value = 0, show = 0, gain = 0, mgain = 0, noPaid = 0, noMarket = 0, compared = 0;
+  for (const c of cards) {
+    const x = ccCalc(c);
+    copies += c.qty;
+    if (x.paid != null) paid += x.paid; else noPaid++;
+    if (x.value != null) { value += x.value; show += x.showValue; } else noMarket++;
+    if (x.gain != null) { gain += x.gain; mgain += x.mgain; compared++; }
+  }
+  const stat = (label, v, sub, cls = "") => `<div class="cc-stat ${cls}"><div class="l">${label}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`;
+  patch($("#cc-stats"), cards.length ? [
+    stat("Cards", copies.toLocaleString(), `${cards.length.toLocaleString()} different`),
+    stat("Paid", money(paid), noPaid ? `${plural(noPaid, "card")} with no price paid yet` : "on eBay, all copies"),
+    stat("Market value", money(value), noMarket ? `${plural(noMarket, "card")} with no market price` : "TCGplayer, Near Mint"),
+    stat(`At a card show (${pct}%)`, money(show), "what a dealer would likely pay", "show"),
+    stat("Profit at a show", compared ? signed(gain) : "—",
+      compared ? `at market ${signed(mgain)}${compared < cards.length ? ` · ${compared} of ${cards.length} cards` : ""}` : "enter what you paid to see it"),
+  ].join("") : "");
+}
+function renderCounter() {
+  renderPricesAge();
+  if (!CC.data) {
+    patch($("#cc-rows"), CC.error ? `<div class="empty">Couldn't load Card Counter: ${esc(CC.error)}</div>`
+                                  : `<div class="empty"><div class="muted">Loading…</div></div>`);
+    return;
+  }
+  const pct = Math.round(ccPct() * 1000) / 10;
+  if (document.activeElement !== $("#cc-pct")) $("#cc-pct").value = pct;
+  $("#cc-sort").value = CC.sort;
+  renderCounterStats();
+  // mid-edit (typing a price), only the numbers redraw, so the box keeps its place
+  if ($("#cc-rows").contains(document.activeElement)) {
+    for (const row of $$("#cc-rows [data-cc]")) { const c = ccOwned(row.dataset.cc); if (c) $("[data-nums]", row).innerHTML = ccNums(ccCard(c)); }
+    return;
+  }
+  patch($("#cc-rows"), ccSorted().map(ccRow).join("") ||
+    `<div class="empty"><div>No cards yet.<br><span class="muted">Search above for a card you own, then put in what you paid and how many you have.</span></div></div>`);
+}
+function ccSaving(text, bad) {
+  const el = $("#cc-saving");
+  el.textContent = text; el.classList.toggle("bad-t", !!bad);
+}
+// a burst of changes (typing a price, tapping + a few times) is one commit
+function ccSave(note = "Card Counter") {
+  CC.note = CC.note && CC.note !== note ? "Card Counter" : note;
+  clearTimeout(CC.timer);
+  ccSaving("Saving…");
+  CC.timer = setTimeout(ccFlush, 1500);
+}
+async function ccFlush() {
+  clearTimeout(CC.timer); CC.timer = null;
+  if (!CC.data) return;
+  if (CC.saving) { CC.again = true; return; }       // one at a time; the latest goes next
+  const body = {show_pct: CC.data.show_pct, cards: CC.data.cards.map(c => ({key: c.key, qty: c.qty, paid: c.paid}))};
+  const note = CC.note || "Card Counter";
+  CC.note = ""; CC.saving = true;
+  try {
+    // this page's list is the whole list: the PC's Card Counter saves the same way
+    await saveFile("collection.json", () => JSON.stringify(body, null, 2) + "\n", `Dashboard: ${note}`);
+    if (!CC.timer && !CC.again) ccSaving("Saved to GitHub");
+  } catch (e) {
+    if (e.status !== 401) toast("Couldn't save Card Counter", e.message, "bad");
+    ccSaving("Not saved", true);
+  } finally {
+    CC.saving = false;
+    if (CC.again) { CC.again = false; ccFlush(); }
+  }
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden && CC.timer) ccFlush(); });
+function ccFocus(key, field) {
+  const row = $$("#cc-rows [data-cc]").find(t => t.dataset.cc === key);
+  if (!row) return;
+  row.scrollIntoView({block: "nearest"});
+  row.classList.remove("flash"); void row.offsetWidth; row.classList.add("flash");
+  const el = $(`[data-f="${field}"]`, row);
+  if (el) { el.focus({preventScroll: true}); el.select(); }
+}
+// c: a catalog card (with _set); focus: jump to its row afterwards
+async function ccAdd(c, focus = true) {
+  if (!CC.data) await loadCounter();
+  if (!CC.data) return toast("Couldn't load Card Counter", CC.error, "bad");
+  const have = ccOwned(c.key);
+  if (have) {
+    toast("Already in Card Counter", `You have ${have.qty}. Change the quantity on its row.`);
+    if (focus) ccFocus(c.key, "qty");
+    return;
+  }
+  const card = CAT.ready.get(setOfKey(c.key))?.cards.find(x => x.key === c.key) || c;
+  CC.info.set(c.key, {card, set: c._set || CAT.bySlug.get(setOfKey(c.key))?.name || ""});
+  CC.data.cards.unshift({key: c.key, qty: 1, paid: null});
+  if (S.view === "counter") renderCounter();
+  ccSave(`add ${c.name}`);
+  if (focus) ccFocus(c.key, "paid");
+  else toast("Added to Card Counter", c.name, "good");
+}
+
+// --- adding: search every set, like the Cards tab's search
+const ccSearch = $("#cc-search"), ccSug = $("#cc-suggest");
+async function ccFind() {
+  const q = foldName(ccSearch.value.trim());
+  if (q.length < 2) { CC.hits = []; return ccSug.classList.add("hidden"); }
+  if (!CC.flat) { ccSug.innerHTML = `<div class="muted" style="cursor:default">Loading every set…</div>`; ccSug.classList.remove("hidden"); }
+  await catalogReady();
+  const sets = await loadAllSets();
+  if (CC.src !== sets || !CC.flat) { CC.src = sets; CC.flat = sets.filter(Boolean).flatMap(d => d.cards.map(c => ({...c, _set: d.name}))); }
+  if (foldName(ccSearch.value.trim()) !== q) return;     // typed on meanwhile
+  const words = q.split(/\s+/);
+  // names starting with what was typed first, then the regular printings
+  const rank = c => (foldName(c.name).startsWith(words[0]) ? 0 : 2) + (c.variant ? 1 : 0);
+  CC.hits = CC.flat.filter(c => { const t = foldName([c.name, c.number, c.rarity, c.variant || "", c._set].join(" ")); return words.every(w => t.includes(w)); })
+    .sort((a, b) => rank(a) - rank(b)).slice(0, 40);
+  CC.idx = 0;
+  ccSuggest();
+}
+function ccSuggest() {
+  if (!ccSearch.value.trim()) return ccSug.classList.add("hidden");
+  ccSug.innerHTML = CC.hits.length ? CC.hits.map((c, i) => {
+    const have = ccOwned(c.key);
+    return `<div class="cc-hit ${i === CC.idx ? "on" : ""}" data-cc-pick="${i}">
+      <img loading="lazy" src="${tcgImg(c.id)}" alt="">
+      <span class="t"><b>${esc(c.name)}</b><small>${[c.number, c._set, c.variant].filter(Boolean).map(esc).join(" · ")}</small></span>
+      ${have ? `<span class="tag">have ${have.qty}</span>` : ""}<span class="mk">${money(c.market)}</span></div>`;
+  }).join("") : `<div class="muted" style="cursor:default">No card matches “${esc(ccSearch.value)}”</div>`;
+  ccSug.classList.remove("hidden");
+  $(".cc-hit.on", ccSug)?.scrollIntoView({block: "nearest"});
+}
+function ccPick(i) {
+  const c = CC.hits[i];
+  if (!c) return;
+  ccSearch.value = ""; CC.hits = []; ccSug.classList.add("hidden");
+  ccAdd(c);
+}
+let ccTimer = null;
+ccSearch.addEventListener("input", () => { clearTimeout(ccTimer); ccTimer = setTimeout(ccFind, 200); });
+ccSearch.addEventListener("keydown", e => {
+  if (e.key === "ArrowDown") { CC.idx = Math.min(CC.hits.length - 1, CC.idx + 1); ccSuggest(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { CC.idx = Math.max(0, CC.idx - 1); ccSuggest(); e.preventDefault(); }
+  else if (e.key === "Enter") { ccPick(CC.idx); e.preventDefault(); }
+  else if (e.key === "Escape") ccSug.classList.add("hidden");
+});
+ccSearch.addEventListener("focus", () => { if (CC.hits.length) ccSuggest(); });
+ccSearch.addEventListener("blur", () => setTimeout(() => ccSug.classList.add("hidden"), 150));
+ccSug.addEventListener("mousedown", e => { const d = e.target.closest("[data-cc-pick]"); if (d) { e.preventDefault(); ccPick(+d.dataset.ccPick); } });
+
+// --- editing a row: only its own numbers redraw, so typing isn't interrupted
+const ccRowCard = el => { const row = el.closest("[data-cc]"); return row && [row, ccOwned(row.dataset.cc)]; };
+const ccRedraw = (row, c) => { $("[data-nums]", row).innerHTML = ccNums(ccCard(c)); renderCounterStats(); };
+$("#cc-rows").addEventListener("input", e => {
+  const f = e.target.dataset.f, hit = f && ccRowCard(e.target);
+  if (!hit || !hit[1]) return;
+  const [row, c] = hit, v = e.target.value.trim();
+  if (f === "qty") {
+    const n = parseInt(v, 10);
+    if (!(n >= 1)) return;
+    c.qty = n;
+  } else {
+    const n = v === "" ? null : parseFloat(v);
+    if (n != null && !(n >= 0)) return;
+    c.paid = n == null ? null : cents(n);
+  }
+  ccRedraw(row, c); ccSave();
+});
+// left blank or nonsense: back to what it was
+$("#cc-rows").addEventListener("change", e => {
+  const hit = e.target.dataset.f && ccRowCard(e.target);
+  if (hit && hit[1]) e.target.value = e.target.dataset.f === "qty" ? hit[1].qty : hit[1].paid ?? "";
+});
+$("#cc-rows").addEventListener("click", e => {
+  const hit = ccRowCard(e.target);
+  if (!hit || !hit[1]) return;
+  const [row, c] = hit, b = e.target.closest("[data-qty]");
+  if (b) {
+    c.qty = Math.max(1, c.qty + +b.dataset.qty);
+    $('[data-f="qty"]', row).value = c.qty;
+    ccRedraw(row, c); ccSave();
+  } else if (e.target.closest("[data-cc-del]")) {
+    const name = ccCard(c).name;
+    if (!confirm(`Take ${name}${c.qty > 1 ? ` (all ${c.qty})` : ""} out of Card Counter?`)) return;
+    CC.data.cards = CC.data.cards.filter(x => x !== c);
+    renderCounter(); ccSave(`take out ${name}`);
+  }
+});
+$("#cc-pct").addEventListener("input", e => {
+  const n = parseFloat(e.target.value);
+  if (!(n >= 1 && n <= 200) || !CC.data) return;
+  CC.data.show_pct = n;
+  renderCounter(); ccSave(`card show price ${n}%`);
+});
+$("#cc-pct").addEventListener("change", e => { if (CC.data) e.target.value = Math.round(ccPct() * 1000) / 10; });
+$("#cc-sort").onchange = e => {
+  CC.sort = e.target.value;
+  store.set("ccSort", CC.sort);
+  renderCounter();
+};
+
+/* ---- Refresh prices: a run of the scan workflow that only fetches today's
+// prices (its prices_only input) and puts them on the results branch: Card
+// Hunter's (prices.json, the Run tab's) and every catalog card's
+// (catalog_prices.json: Card Counter and the Cards tab). It waits behind a
+// scan that's going, like any run. TCGplayer's numbers change once a day. */
+const PR = {starting: false};
+const isPricesRun = r => r.display_title === "Refresh prices";
+const pricesRun = () => S.actions.find(r => isPricesRun(r) && r.status !== "completed");
+const fmtWhen = d => new Date(d).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+function agoText(d) { const s = (Date.now() - new Date(d)) / 1000; return s < 172800 ? fmtDur(s) + " ago" : Math.floor(s / 86400) + " days ago"; }
+function renderPricesAge() {
+  const run = pricesRun(), busy = !!run || PR.starting;
+  for (const b of $$("[data-refresh-prices]")) { b.disabled = busy; b.textContent = busy ? "Refreshing…" : "Refresh prices"; }
+  const line = (el, iso, src) => {
+    if (busy) {
+      el.textContent = run?.status === "in_progress" ? "Fetching today's prices on GitHub…" : "Waiting for GitHub to start the refresh…";
+      el.title = ""; el.classList.remove("warn-t");
+      return;
+    }
+    const at = iso ? new Date(iso) : null;
+    if (!at || isNaN(at)) { el.textContent = "Prices never fetched"; el.title = ""; el.classList.add("warn-t"); return; }
+    el.textContent = `Prices updated ${fmtWhen(at)} (${agoText(at)})`;
+    el.title = (src ? `TCGplayer's prices as of ${fmtWhen(src)}. ` : "") + "TCGplayer market price via tcgcsv.com. Each day's first run refreshes them too.";
+    el.classList.toggle("warn-t", Date.now() - at > 36 * 3600e3);
+  };
+  line($("#rn-prices-age"), S.prices?.updated);
+  line($("#cc-prices-age"), CAT.todayAt, CAT.todaySrc);
+}
+setInterval(renderPricesAge, 60000);
+document.addEventListener("click", async e => {
+  if (!e.target.closest("[data-refresh-prices]") || PR.starting || pricesRun()) return;
+  PR.starting = true; renderPricesAge();
+  const clicked = Date.now(), known = new Set(S.actions.map(r => r.id));
+  try {
+    await gh(repoPath(`/actions/workflows/${WORKFLOW}/dispatches`), {method: "POST", body: {ref: "main", inputs: {
+      etb: "false", hunter: "false", email: "false", hunter_args: "", prices_only: "true"}}});
+    for (let i = 0; i < 12; i++) {                // GitHub doesn't say which run it started
+      await sleep(i ? 2500 : 1500);
+      await loadActions();
+      if (S.actions.some(r => !known.has(r.id) && isPricesRun(r) && Date.parse(r.created_at) > clicked - 60000)) break;
+    }
+    toast("Refreshing prices", "On GitHub, a minute or two. They update here when it's done.");
+    schedulePoll(1000);
+  } catch (err) {
+    if (err.status !== 401) toast("Couldn't refresh prices", err.message, "bad");
+  } finally {
+    PR.starting = false;
+    renderPricesAge(); if (S.view === "run") renderRun(); else renderRunBadge();
+  }
+});
+// the refresh finished: today's prices into everything that shows one
+async function pricesRefreshed(r) {
+  if (r.conclusion !== "success") return toast("Couldn't refresh prices", "Open it on the Run tab for details.", "bad");
+  const [hunt, cat] = await Promise.all([
+    getRaw("prices.json", "results").then(JSON.parse).catch(() => null),
+    getRaw("catalog_prices.json", "results").then(JSON.parse).catch(() => null)]);
+  if (hunt) S.prices = hunt;
+  if (cat?.prices) {
+    CAT.today = cat.prices; CAT.todayAt = cat.updated; CAT.todaySrc = cat.source_updated;
+    for (const d of CAT.ready.values()) for (const c of d.cards) {
+      c.market = CAT.today[c.id] ?? c.market;
+      if (c.market != null) CAT.market.set(c.key, c.market);
+    }
+    CC.flat = null;                               // search results carry copies
+  }
+  if (cat?.updated && Date.parse(cat.updated) < Date.parse(r.run_started_at || r.created_at))
+    toast("Already up to date", "TCGplayer hasn't put out newer prices yet. They update once a day, about 4pm Eastern.");
+  else toast("Prices refreshed", "Today's TCGplayer market prices, for every card.", "good");
+  if (S.view === "counter") renderCounter(); else if (S.view === "cards") { renderCards(); renderCatalog(); }
+  renderPricesAge();
+}
 
 /* ================================================================== SCHEDULE */
 const SCHED_RE = /(  # --- schedule start ---\r?\n)([\s\S]*?)(  # --- schedule end ---)/;
@@ -2090,10 +2488,12 @@ function schedulePoll(ms) {
 }
 async function pollTick(manual) {
   try {
-    const finished = await loadActions();
+    let finished = await loadActions();
     const sel = S.actions.find(r => r.id === S.selectedRun);
     const active = S.actions.filter(r => r.status !== "completed");
     await Promise.all([...new Set([sel, ...active].filter(Boolean))].map(loadJobs));
+    for (const r of finished.filter(isPricesRun)) await pricesRefreshed(r);
+    finished = finished.filter(r => !isPricesRun(r));
     if (finished.length) {
       await loadResults();
       RS.key = null;
@@ -2122,6 +2522,7 @@ async function pollTick(manual) {
     if (manual === true) toast("Couldn't refresh", e.message, "bad");
   }
   if (S.view === "run") renderRun(); else renderRunBadge();
+  renderPricesAge();
   schedulePoll();
 }
 function renderRunBadge() {
@@ -2173,6 +2574,7 @@ async function start() {
   for (const x of [cfg, acts, res]) if (x.status === "rejected" && x.reason?.status !== 401) toast("Couldn't load everything", x.reason?.message || String(x.reason), "bad");
   if (cfg.status === "rejected" && cfg.reason?.status === 401) return;
   renderVersion(); renderQuota(); renderChips();
+  loadCounter();                 // the card close-up says which you own
   show(store.get("view", "run"));
   const sel = S.actions.find(r => r.status !== "completed") || S.actions[0];
   if (sel) { S.selectedRun = sel.id; await loadJobs(sel); if (S.view === "run") renderRunDetail(); }

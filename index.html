@@ -482,6 +482,58 @@ input::placeholder { color: var(--faint); }
 .pfoot { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; color: var(--muted); }
 .set-title img.mon { height: 52px; width: 52px; max-width: none; }
 
+/* card counter: the cards you own, what you paid vs market and card show price */
+#cc-picker { flex: 1 1 320px; min-width: 0; }
+#cc-suggest { max-height: 380px; }
+#cc-suggest .cc-hit { justify-content: flex-start; align-items: center; }
+.cc-hit img { width: 30px; height: 42px; object-fit: cover; border-radius: 3px; background: var(--panel-3); flex: none; }
+.cc-hit .t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.cc-hit .t b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-hit .t small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-hit .mk { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.cc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.cc-stats:empty { display: none; }
+.cc-stat { background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 8px 12px; min-width: 0; }
+.cc-stat .l { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.cc-stat .v { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cc-stat .s { font-size: 11.5px; color: var(--muted); }
+.cc-stat.show { background: var(--accent-bg); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.up { color: var(--good); } .down { color: var(--bad); }
+.cc-row { display: grid; grid-template-columns: 50px minmax(0, 1fr) auto 34px; gap: 6px 14px; align-items: center;
+          padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.cc-row.flash { animation: ccflash 1.4s ease-out; }
+@keyframes ccflash { from { background: var(--accent-bg); } }
+.cc-row > img, .cc-row > .noimg { width: 50px; height: 70px; object-fit: cover; border-radius: 4px; background: var(--panel-3); align-self: start; }
+.cc-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.cc-name { font-weight: 600; }
+.cc-sub { font-size: 12px; color: var(--muted); }
+.cc-sub a { text-decoration: none; white-space: nowrap; }
+.cc-edit { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+.cc-qty { display: inline-flex; align-items: center; border: 1px solid var(--border-2); border-radius: 7px; background: var(--panel-2); }
+.cc-qty button { border: 0; background: none; width: 32px; padding: 5px 0; cursor: pointer; color: var(--muted); font-size: 16px; line-height: 1; }
+.cc-qty button:hover { color: var(--text); }
+.cc-qty input[type=number] { width: 44px; text-align: center; border: 0; border-radius: 0; background: none; padding: 5px 0; -moz-appearance: textfield; }
+.cc-paid { position: relative; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.cc-paid > span { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; font-size: 14px; }
+.cc-paid input[type=number] { width: 92px; padding-left: 18px; text-align: right; -moz-appearance: textfield; }
+.cc-list input[type=number]::-webkit-inner-spin-button, .cc-list input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.cc-nums { display: grid; grid-template-columns: repeat(4, minmax(86px, auto)); gap: 4px 16px; text-align: right; font-variant-numeric: tabular-nums; }
+.cc-nums .l { display: block; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); }
+.cc-nums b { font-weight: 650; }
+.cc-nums .sub { display: block; font-size: 11px; color: var(--muted); }
+.cc-nums .show b { color: var(--accent); }
+.cc-row .btn.icon svg { width: 14px; height: 14px; }
+.cc-list .empty { padding: 40px 20px; }
+@media (max-width: 900px) {
+  #view-counter .cdb { overflow: visible; flex: none; }
+  #view-counter .cdb-body { flex: none; overflow: visible; }
+  .cc-row { grid-template-columns: 50px minmax(0, 1fr) 34px; }
+  .cc-row > [data-cc-del] { grid-column: 3; grid-row: 1; align-self: start; }
+  .cc-nums { grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); text-align: left; gap: 8px 12px;
+             background: var(--panel-2); border-radius: 8px; padding: 8px 10px; }
+  #cc-sort { flex: 1; }
+}
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 6px; border: 2px solid var(--panel); }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -576,6 +628,7 @@ input::placeholder { color: var(--faint); }
     <button data-view="run" class="active">Run<span class="count hidden" id="nav-running"></span></button>
     <button data-view="results">Reports</button>
     <button data-view="cards">Cards</button>
+    <button data-view="counter">Card Counter</button>
     <button data-view="schedule">Schedule</button>
     <button data-view="settings">Settings</button>
   </nav>
@@ -650,12 +703,19 @@ input::placeholder { color: var(--faint); }
             <div class="field" title="Where you'd ship to, so eBay can price calculated shipping. Saved for every run.">
               <label for="rn-zip">Ship to ZIP</label><input type="text" id="rn-zip" inputmode="numeric" maxlength="5" placeholder="e.g. 10001" autocomplete="postal-code"></div>
           </div>
-          <div class="row" style="align-items:flex-end">
-            <div class="field" style="flex:0 0 118px" title="Cap each card at this share of its TCGplayer market price, shipping included. 80 = only listings at 80% of market or less.">
+          <div class="row" style="align-items:flex-end;flex-wrap:wrap">
+            <div class="field" style="flex:0 0 118px" title="Cap each card at this share of its TCGplayer market price, shipping and sales tax included. 80 = only listings at 80% of market or less.">
               <label for="rn-pct">% of market</label>
               <div class="suffix"><input type="number" id="rn-pct" min="1" max="500" step="5" inputmode="numeric"><span>%</span></div>
             </div>
-            <div class="prices-line"><span class="hint" id="rn-prices-age"></span></div>
+            <div class="field" style="flex:0 0 118px" title="Your sales tax rate (state + local). eBay adds it at checkout on the item and shipping, so it's counted into the cap, the price shown and the % of market. Saved for every run; 0 leaves tax out.">
+              <label for="rn-tax">Sales tax</label>
+              <div class="suffix"><input type="number" id="rn-tax" min="0" max="20" step="0.25" placeholder="0" inputmode="decimal"><span>%</span></div>
+            </div>
+            <div class="prices-line" style="flex:1 0 220px">
+              <span class="hint" id="rn-prices-age"></span>
+              <button class="btn ghost sm" data-refresh-prices title="Fetch today's TCGplayer market prices now, for Card Hunter, Card Counter and the Cards tab. Free, no eBay calls; takes a minute or two on GitHub.">Refresh prices</button>
+            </div>
           </div>
           <div class="notice hidden" id="rn-zip-notice">Set your ZIP so shipping gets priced. Without it, most listings show “shipping ?” and slip past the price cap.</div>
           <div class="field">
@@ -914,6 +974,38 @@ input::placeholder { color: var(--faint); }
     </div>
   </section>
 
+  <!-- ================= CARD COUNTER ================= -->
+  <section class="view hidden" id="view-counter">
+    <div class="cdb">
+      <div class="cdb-head">
+        <div class="cdb-row">
+          <div class="picker" id="cc-picker">
+            <input type="search" id="cc-search" placeholder="Add a card you own: search by name, number, set…" autocomplete="off">
+            <div class="suggest hidden" id="cc-suggest"></div>
+          </div>
+          <label class="suffix" for="cc-pct" title="Card show dealers usually pay a share of market price. Every card's card show price is market × this.">Card show price
+            <input type="number" id="cc-pct" min="1" max="200" step="1" inputmode="decimal" style="width:66px"> % of market</label>
+          <select id="cc-sort" style="width:auto" title="Sort">
+            <option value="added">Newest added</option>
+            <option value="name">Name</option>
+            <option value="set">Set, then number</option>
+            <option value="value-desc">Value, high → low</option>
+            <option value="gain-desc">Profit, high → low</option>
+            <option value="gain-asc">Profit, low → high</option>
+          </select>
+        </div>
+        <div class="cdb-row">
+          <span class="hint" id="cc-prices-age"></span>
+          <span class="spacer"></span>
+          <span class="hint" id="cc-saving"></span>
+          <button class="btn sm" data-refresh-prices title="Fetch today's TCGplayer market prices now. Free, no eBay calls; takes a minute or two on GitHub. TCGplayer's numbers only change once a day (about 4pm Eastern), so clicking again before then changes nothing.">Refresh prices</button>
+        </div>
+        <div class="cc-stats" id="cc-stats"></div>
+      </div>
+      <div class="cdb-body"><div class="cc-list" id="cc-rows"></div></div>
+    </div>
+  </section>
+
   <!-- ================= SCHEDULE ================= -->
   <section class="view hidden" id="view-schedule">
     <div class="panel-wrap"><div class="panel">
@@ -984,14 +1076,14 @@ input::placeholder { color: var(--faint); }
         <div class="row">
           <div class="field"><label for="st-pct">Price cap, % of market</label>
             <div class="suffix"><input type="number" id="st-pct" min="1" max="500" step="5" placeholder="100"> %</div>
-            <span class="hint">80 = only listings at 80% of market or less, shipping included.</span></div>
+            <span class="hint">80 = only listings at 80% of market or less, shipping and sales tax included.</span></div>
           <div></div>
         </div>
         <p class="hint">Each time filter only applies to its own listing type. An auction with Buy It Now counts if it passes either.</p>
       </div>
       <div class="card">
         <h2>Saved on the Run tab</h2>
-        <p>The ETB promos to search, the ship-to ZIP and the languages to skip are on the Run tab, next to the rest of each scan's options. They apply to every run, scheduled ones too.</p>
+        <p>The ETB promos to search, the ship-to ZIP, your sales tax and the languages to skip are on the Run tab, next to the rest of each scan's options. They apply to every run, scheduled ones too.</p>
         <div><button class="btn sm" data-goto="run">Open the Run tab</button></div>
       </div>
       <div class="save-row">
