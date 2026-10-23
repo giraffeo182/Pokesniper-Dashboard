@@ -1170,7 +1170,7 @@ function shownPresetKeys() {
   return (CS.shown || []).map(c => catKey(c, rowFor(c, m)));
 }
 function presetPick(keys, add) {
-  for (const k of keys) if (add) PE.keys.add(k); else PE.keys.delete(k);
+  for (const k of keys) if (add) { PE.keys.add(k); PE.page.add(k); } else PE.keys.delete(k);
   renderCards();
 }
 // the buttons and filters say what they do while picking
@@ -1202,12 +1202,12 @@ function renderPresets() {
     // built once, so typing in the name box isn't interrupted
     if (!$("#pe-name", box)) box.innerHTML = `<span class="pe-tag">${PE.i >= 0 ? "Editing preset" : "New preset"}</span>
       <input type="text" id="pe-name" placeholder="Preset name" maxlength="60" autocomplete="off" value="${esc(PE.name)}">
-      <span class="hint" id="pe-count"></span>
+      <button class="btn ghost sm" id="pe-show" title="Show just the cards in this preset, to search them or take some out"><span id="pe-count"></span></button>
       <span class="spacer"></span>
       ${PE.i >= 0 ? `<button class="btn danger sm" id="pe-delete">Delete</button>` : ""}
       <button class="btn sm" id="pe-cancel">Cancel</button>
       <button class="btn primary sm" id="pe-save">Save preset</button>
-      <span class="hint pe-help">Pick cards below: selecting one adds it to the preset or takes it out. Browse sets and Pokémon, search and filter as usual.</span>`;
+      <span class="hint pe-help">Pick cards below: selecting one adds it to the preset or takes it out. Browse sets and Pokémon, search and filter as usual. The card count shows just the cards in it.</span>`;
     const n = PE.keys.size;
     $("#pe-count").textContent = `${n} card${n === 1 ? "" : "s"} in it`;
     return;
@@ -1240,12 +1240,16 @@ function togglePreset(i, want) {
 function startPreset(i) {
   const p = presetList()[i];
   PE = {i: p ? i : -1, name: p ? p.name : "", keys: new Set(p ? p.cards : [])};
+  // the cards its page shows: a card taken out stays there, so it can go back in
+  PE.page = new Set(PE.keys);
   $("#c-presets").innerHTML = "";
+  if (p) return openPresetPage();      // editing one starts on its own cards
   renderCards();
-  if (!p) $("#pe-name").focus();
+  $("#pe-name").focus();
 }
 function stopPreset() {
   PE = null;
+  if (CS.mode === "preset") CS.mode = "sets";
   renderCards();
 }
 async function savePreset() {
@@ -1273,6 +1277,7 @@ $("#c-presets").addEventListener("click", e => {
   const ed = e.target.closest("[data-preset-edit]");
   if (ed) startPreset(+ed.dataset.presetEdit);
   else if (e.target.closest("[data-preset-new]")) startPreset(-1);
+  else if (e.target.closest("#pe-show")) openPresetPage();
   else if (e.target.closest("#pe-save")) savePreset();
   else if (e.target.closest("#pe-cancel")) stopPreset();
   else if (e.target.closest("#pe-delete")) deletePreset();
@@ -1290,7 +1295,7 @@ const CAT = {sets: null, bySlug: new Map(), data: new Map(), ready: new Map(), a
 // modes: sets (every set) -> set (one), dex (every Pokemon) -> mon (one), mine
 const CS = {mode: "sets", slug: null, dex: null, q: "", gq: "", dq: "", gen: 0, rarity: "", status: "", variants: false, ntl: false, reprints: false, sort: "number", monSort: "number", shown: []};
 Object.assign(CS, store.get("catalogView", {}), {q: "", gq: "", dq: "", slug: null, dex: null, shown: []});
-const saveCatalogView = () => store.set("catalogView", {mode: {set: "sets", mon: "dex"}[CS.mode] || CS.mode, gen: CS.gen, variants: CS.variants, ntl: CS.ntl, reprints: CS.reprints, sort: CS.sort, monSort: CS.monSort});
+const saveCatalogView = () => store.set("catalogView", {mode: {set: "sets", mon: "dex", preset: "sets"}[CS.mode] || CS.mode, gen: CS.gen, variants: CS.variants, ntl: CS.ntl, reprints: CS.reprints, sort: CS.sort, monSort: CS.monSort});
 const TICK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
 const fmtRelease = iso => new Date(iso + "T12:00:00").toLocaleDateString([], {month: "long", day: "numeric", year: "numeric"});
 
@@ -1378,13 +1383,14 @@ function renderCatalog() {
   $("#cm-sets").classList.toggle("searching", searching);
   $("#cs-sets").classList.toggle("hidden", searching);
   $("#cm-dex").classList.toggle("hidden", CS.mode !== "dex");
-  $("#cm-set").classList.toggle("hidden", !(CS.mode === "set" || CS.mode === "mon" || searching));
+  const page = CS.mode === "set" || CS.mode === "mon" || CS.mode === "preset";
+  $("#cm-set").classList.toggle("hidden", !(page || searching));
   $("#cm-set").classList.toggle("global", searching);
   $("#cm-mine").classList.toggle("hidden", CS.mode !== "mine");
   $("#cs-back-t").textContent = CS.mode === "mon" ? "All Pokémon" : "All sets";
   if (CS.mode === "sets" && !searching) renderSetTiles();
   else if (CS.mode === "dex") renderDexTiles();
-  else if (CS.mode === "set" || CS.mode === "mon" || searching) renderSetCards();
+  else if (page || searching) renderSetCards();
 }
 
 function renderSetTiles() {
@@ -1527,7 +1533,7 @@ function withReprints(own, sets) {
   return own.flatMap((c, i) => [c, ...(after.get(i) || [])]);
 }
 async function renderSetCards() {
-  const global = CS.mode === "sets" && !!CS.gq, mon = CS.mode === "mon";
+  const global = CS.mode === "sets" && !!CS.gq, mon = CS.mode === "mon", pre = CS.mode === "preset";
   let cards, st = null;
   if (global) {
     if (!CAT.all) $("#cs-cards").innerHTML = `<div class="empty">Loading every set…</div>`;
@@ -1542,6 +1548,19 @@ async function renderSetCards() {
     if (!monSlugs(p).every(s => CAT.ready.has(s))) { $("#cs-cards").innerHTML = `<div class="empty">Loading every ${esc(p.name)} card…</div>`; $("#cs-cards")._html = null; }
     cards = await monCards(p);
     if (CS.mode !== "mon" || CS.dex !== p.dex) return;
+  } else if (pre) {
+    if (!PE) { CS.mode = "sets"; return renderCatalog(); }
+    const n = PE.keys.size;
+    $("#cs-title").innerHTML = `<div><b>${esc(PE.name.trim() || "New preset")}</b><div class="hint">${plural(n, "card")} in this preset · untick one to take it out · All sets or Pokémon to add more</div></div>`;
+    const sig = [...PE.page].join(" ");
+    if (CS.preset?.sig !== sig) {
+      $("#cs-cards").innerHTML = `<div class="empty">Loading the cards in it…</div>`; $("#cs-cards")._html = null;
+      const found = await presetCatalogCards([...PE.page]);
+      if (!found) return;                                  // the catalog isn't loaded yet
+      CS.preset = {sig, cards: found};
+    }
+    if (CS.mode !== "preset" || !PE) return;
+    cards = CS.preset.cards;
   } else {
     st = CAT.bySlug.get(CS.slug);
     if (!st) { CS.mode = "sets"; return renderCatalog(); }
@@ -1577,15 +1596,16 @@ async function renderSetCards() {
   const nRep = st && !CS.reprints ? st.reprints || 0 : cards.filter(c => isRep(c) && (CS.variants || !c.variant) && (CS.ntl || !c.ntl)).length;
   $("#cs-rep-l").classList.toggle("hidden", !nRep);
   $("#cs-rep").checked = CS.reprints;
+  if (pre) for (const id of ["#cs-variants-l", "#cs-ntl-l", "#cs-rep-l"]) $(id).classList.add("hidden");
   $("#cs-rep-t").textContent = `Reprints (${nRep.toLocaleString()})`;
   const rarities = [...new Set(cards.map(c => c.rarity).filter(Boolean))];
   if (CS.rarity && !rarities.includes(CS.rarity)) CS.rarity = "";
   $("#cs-rarity").innerHTML = [["", "All rarities"], ...rarities.map(r => [r, r])].map(([v, t]) =>
     `<option value="${esc(v)}" ${CS.rarity === v ? "selected" : ""}>${esc(t)}</option>`).join("");
   $$("#cs-status button").forEach(b => b.classList.toggle("active", b.dataset.status === CS.status));
-  $("#cs-search").placeholder = mon ? "Search these cards…" : "Search this set…";
+  $("#cs-search").placeholder = pre ? "Search this preset: name, number, set…" : mon ? "Search these cards…" : "Search this set…";
   // a Pokemon's cards come from every set, so "number" is release order there
-  const sorts = [...(mon ? [["number", "Oldest first"], ["newest", "Newest first"]] : [["number", "Number"]]),
+  const sorts = [...(mon ? [["number", "Oldest first"], ["newest", "Newest first"]] : [["number", pre ? "Set, then number" : "Number"]]),
     ["market-desc", "Market price, high → low"], ["market-asc", "Market price, low → high"], ["name", "Name"]];
   const want = mon ? CS.monSort : CS.sort;            // a Pokemon keeps its own: release order unless changed
   const sort = sorts.some(([v]) => v === want) ? want : "number";
@@ -1594,8 +1614,8 @@ async function renderSetCards() {
 
   let list = cards.filter(c => {
     const row = rowFor(c, m), on = catOn(c, row);
-    return (CS.variants || !c.variant) && (CS.ntl || !c.ntl) && (CS.reprints || !isRep(c)) && (!CS.rarity || c.rarity === CS.rarity) && (!CS.status || (CS.status === "on") === on) &&
-      words.every(w => [c.name, c.number, c.rarity, c.variant || "", global || mon ? c._set : ""].join(" ").toLowerCase().includes(w));
+    return (pre || ((CS.variants || !c.variant) && (CS.ntl || !c.ntl) && (CS.reprints || !isRep(c)))) && (!CS.rarity || c.rarity === CS.rarity) && (!CS.status || (CS.status === "on") === on) &&
+      words.every(w => [c.name, c.number, c.rarity, c.variant || "", global || mon || pre ? c._set : ""].join(" ").toLowerCase().includes(w));
   });
   const by = {
     name: (a, b) => a.name.localeCompare(b.name) || catNum(a) - catNum(b),
@@ -1618,8 +1638,9 @@ async function renderSetCards() {
       <div class="nm">${esc(c.name)}</div>
       <div class="meta"><span>${esc(c.number)}</span><span class="rar">${esc(c.rarity)}</span><span class="mk">${money(c.market)}</span></div>
       ${c.variant ? `<div class="var">${esc(c.variant)}</div>` : ""}
-      ${global || mon || c._rep ? `<div class="from">${esc(c._set)}</div>` : ""}</button>`;
-  }).join("") || `<div class="empty">${mon && !cards.length ? "No cards of this Pokémon yet." : "No cards match."}</div>`);
+      ${global || mon || pre || c._rep ? `<div class="from">${esc(c._set)}</div>` : ""}</button>`;
+  }).join("") || `<div class="empty">${mon && !cards.length ? "No cards of this Pokémon yet."
+    : pre && !cards.length ? "Nothing in this preset yet. Go back to All sets or Pokémon and pick some cards." : "No cards match."}</div>`);
 }
 
 // Tick or untick catalog cards: ones already in cards.json flip like the
@@ -1634,6 +1655,29 @@ function huntCatalog(cards, on) {
     else { Cd.adds.delete(c.key); Cd.pending.delete(c.key); }
   }
   if (flip.length) setEnabled(flip, on); else renderCards();
+}
+// A preset's own page: just its cards, from every set they're in, to search
+// and untick. Only the sets they're from get loaded (a card's key ends in
+// its set); every set only if some card's isn't in the one its key says.
+async function presetCatalogCards(keys) {
+  if (!CAT.bySlug.size) return null;
+  const m = mine(), want = new Set(keys), order = [...CAT.bySlug.keys()];
+  const pick = sets => {
+    const out = [], found = new Set();
+    for (const d of sets) if (d) for (const c of d.cards) {
+      const k = catKey(c, rowFor(c, m));
+      if (want.has(k) && !found.has(k)) { found.add(k); out.push({...c, _set: d.name, _slug: d.slug}); }
+    }
+    return out;
+  };
+  const slugs = [...new Set(keys.map(setOfKey).filter(Boolean))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  const out = pick(await loadSets(slugs));
+  return out.length < want.size ? pick(await loadAllSets()) : out;
+}
+function openPresetPage() {
+  CS.mode = "preset"; CS.q = ""; CS.rarity = ""; CS.status = ""; CS.gq = "";
+  $("#cs-search").value = ""; $("#cs-gsearch").value = "";
+  renderCards(); window.scrollTo(0, 0); $("#cm-set .cdb-body").scrollTop = 0;
 }
 function openSet(slug) {
   CS.mode = "set"; CS.slug = slug; CS.q = ""; CS.rarity = ""; CS.status = ""; $("#cs-search").value = "";
