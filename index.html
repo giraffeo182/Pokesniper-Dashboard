@@ -797,8 +797,9 @@ input::placeholder { color: var(--faint); }
           <div class="checks">
             <label class="check" title="Ignores the seen list: everything that matches is reported again"><input type="checkbox" id="rn-all"> Re-check seen</label>
             <label class="check" title="Graded slabs (PSA, BGS, CGC…) are left out unless this is ticked. Ticked, they're shown with their grade and no market %, since TCGplayer doesn't price slabs. Saved for every run."><input type="checkbox" data-graded="include_graded"> Include graded slabs</label>
+            <label class="check" title="About 10 Pokémon names in one eBay search, and only the listings inside your time filters, for roughly a tenth of the calls. A grouped search only matches the name in the title, so a listing that only says it in its item specifics or description is missed (mostly other cards). Needs a time filter; without one, searches run one by one. Untick for the old one-search-per-query way. Saved for every run."><input type="checkbox" id="rn-grouped"> Grouped searches</label>
           </div>
-          <span class="hint">These start as your usual options from the Settings tab and only change this run. The ZIP, languages, conditions and graded slabs are saved for every run.</span>
+          <span class="hint">These start as your usual options from the Settings tab and only change this run. The ZIP, languages, conditions, graded slabs and grouped searches are saved for every run.</span>
         </div>
         <div class="tool-foot"><span class="cost" id="rn-hunter-cost"></span></div>
       </div>

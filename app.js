@@ -227,7 +227,7 @@ function cardRows(pendingAware = true) {
     return {
       key: c.key, label, name: (nameNum || label).replace(/\s+[A-Z]*\d+[a-z]?$/, "").trim(),
       number: p.number || (m ? m[1] : ""), set: setName || "Other", rarity: p.rarity || "",
-      enabled, saved, queries: (c.queries || [c.key]).length,
+      enabled, saved, queries: (c.queries || [c.key]).length, qs: c.queries || [c.key],
       market, cap, source, tcg: p.tcgplayer_id || c.tcgplayer_id,
       // Card Hunter fetches TCGplayer's scan for a card that has a product id
       hasRef: S.refs.has(c.key) || !!c.tcgplayer_id,
@@ -239,9 +239,37 @@ const enabledCards = () => cardRows(false).filter(c => c.enabled);
 // Buy It Now listed-within + auctions: card_hunter searches each query
 // twice, newest-first and soonest-ending. Default: the scheduled runs' options.
 const splitSearch = (type, newHours) => (type || "both") === "both" && num(newHours) > 0;
-const cloudSplit = () => splitSearch(S.settings?.cloud?.type, S.settings?.cloud?.new_hours);
-const callsPerRun = (cards, etb = true, split = cloudSplit()) =>
-  cards.reduce((n, c) => n + c.queries, 0) * (split ? 2 : 1) + (etb ? etbCalls() : 0);
+const callsPerRun = (cards, etb = true, form = usualRun()) =>
+  hunterCalls(cards, form) + (etb ? etbCalls() : 0);
+// card_hunter.search_plan's passes for these options, each true when it has
+// a time window for eBay to filter by (auction hours 0 = every auction)
+function searchPasses({type, newh, hours}) {
+  if (splitSearch(type, newh)) return [true, num(hours) !== 0];
+  return [(type || "both") !== "auction" && num(newh) > 0];
+}
+function hunterCalls(cards, form) {
+  const passes = searchPasses(form);
+  if (!shared().grouped) return cards.reduce((n, c) => n + c.queries, 0) * passes.length;
+  // Grouped searches (card_hunter.prefetch_grouped): a card's queries less
+  // any that only narrow another of them; one-word ones ORed together, 96
+  // characters to a search, on every pass with a time window (newest-first
+  // ones often take a second page); the rest one by one, as ever.
+  const names = new Set(), solo = [];
+  for (const c of cards) {
+    const words = c.qs.map(q => new Set(q.toLowerCase().split(/\s+/)));
+    c.qs.forEach((q, i) => {
+      if (words.some((w, j) => j !== i && [...w].every(x => words[i].has(x)) && (w.size < words[i].size || j < i))) return;
+      if (/^[^\s,()"*-][^\s,()"*]*$/.test(q)) names.add(q.toLowerCase()); else solo.push(q);
+    });
+  }
+  let groups = 0, len = 0;
+  for (const n of names) {
+    if (!len || len + n.length + 2 > 96) { groups++; len = 0; }
+    len += n.length + 1;
+  }
+  const w = passes.filter(Boolean).length, u = passes.length - w;
+  return groups * w + (passes[0] ? Math.ceil(groups / 2) : 0) + solo.length * w + (names.size + solo.length) * u;
+}
 // what a scheduled run spends: only the scans ticked in Settings
 const scheduledOn = tool => S.settings?.cloud?.[tool] !== false;
 const scheduledCalls = cards => (scheduledOn("hunter") ? callsPerRun(cards, false) : 0) + (scheduledOn("etb") ? etbCalls() : 0);
@@ -385,7 +413,7 @@ function syncRunForm() {
 function renderRunCost() {
   const etb = $("#rn-etb").checked, hunter = $("#rn-hunter").checked;
   const cards = RN.cards.length ? cardRows(false).filter(c => RN.cards.includes(c.key)) : enabledCards();
-  const f = runForm(), hunterCalls = callsPerRun(cards, false, splitSearch(f.type, f.newh));
+  const f = runForm(), hunterCalls = callsPerRun(cards, false, f);
   const problem = runProblem();
   $("#rn-etb-cost").textContent = `≈ ${plural(etbCalls(), "eBay call")}`;
   $("#rn-hunter-cost").textContent = `${plural(cards.length, "card")} · ≈ ${plural(hunterCalls, "eBay call")}` +
@@ -407,11 +435,11 @@ function shared() {
   const s = S.settings || {};
   return {zip: s.ship_to_zip || "", tax: num(s.sales_tax_pct) ?? 0, off: new Set(s.exclude_languages || []), condOff: new Set(s.exclude_conditions || []),
           graded: {include_graded: s.include_graded === true, etb_include_graded: s.etb_include_graded === true},
-          etbOff: new Set(s.etb_off || [])};
+          grouped: s.grouped_search === true, etbOff: new Set(s.etb_off || [])};
 }
 function changeShared(fn, note) {
   const w = shared();
-  SV.want = {zip: w.zip, tax: w.tax, off: new Set(w.off), condOff: new Set(w.condOff), graded: {...w.graded}, etbOff: new Set(w.etbOff)};
+  SV.want = {zip: w.zip, tax: w.tax, off: new Set(w.off), condOff: new Set(w.condOff), graded: {...w.graded}, grouped: w.grouped, etbOff: new Set(w.etbOff)};
   fn(SV.want);
   SV.note = SV.note && SV.note !== note ? "run settings" : note;
   clearTimeout(SV.timer);
@@ -432,6 +460,7 @@ async function flushShared() {
       d.exclude_conditions = CONDS.map(([c]) => c).filter(c => w.condOff.has(c));
       d.include_graded = w.graded.include_graded;
       d.etb_include_graded = w.graded.etb_include_graded;
+      d.grouped_search = w.grouped;
       if (S.promos.length) d.etb_off = S.promos.map(p => p.key).filter(k => w.etbOff.has(k));
       return JSON.stringify(d, null, 2) + "\n";
     }, `Dashboard: ${note}`);
@@ -461,6 +490,7 @@ function renderRunShared() {
   $("#cond-dd-label").textContent = condsOn.length === CONDS.length ? "All conditions" : condsOn.length ? condsOn.join(", ") : "None: every listing is dropped";
   // graded slabs: one tick per tool, left out unless ticked
   $$("[data-graded]").forEach(b => b.checked = w.graded[b.dataset.graded]);
+  $("#rn-grouped").checked = w.grouped;
   $("#cond-dd-btn").classList.toggle("none", !condsOn.length);
   renderPricesAge();
   renderPromos();
@@ -492,6 +522,10 @@ $$("[data-graded]").forEach(b => b.addEventListener("change", e => {
   changeShared(w => { w.graded[key] = e.target.checked; },
     `${tool}: ${e.target.checked ? "include" : "leave out"} graded slabs`);
 }));
+$("#rn-grouped").addEventListener("change", e => {
+  changeShared(w => { w.grouped = e.target.checked; },
+    `Card Hunter: ${e.target.checked ? "grouped searches" : "one search per query"}`);
+});
 for (const id of ["lang", "cond"]) $(`#${id}-dd-btn`).onclick = () => {
   const open = $(`#${id}-dd-panel`).classList.toggle("hidden") === false;
   $(`#${id}-dd-btn`).setAttribute("aria-expanded", open);
