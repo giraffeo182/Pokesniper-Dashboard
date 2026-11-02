@@ -839,6 +839,8 @@ function normalize(kind, r, runId) {
     cond: kind === "hunt" ? r.condition || null : null,
     // "PSA 9" for a graded slab, which has no market price to compare
     grade: kind === "hunt" ? r.grade || null : null,
+    // what it cost when it was found before, when the seller has since cut the price or shipping
+    priceWas: kind === "hunt" ? num(r.price_was) : null,
   };
 }
 const FILTERS = [
@@ -933,14 +935,15 @@ function priceBits(x) {
 const PCT_TIP = () => `% of market: all-in = item + shipping${shared().tax ? ` + ${shared().tax}% sales tax` : " (no sales tax set)"}; w/ ship = item + shipping; item only = the price alone`;
 const pctRow = p => p.pcts ? `<div class="mpct" title="${esc(PCT_TIP())}">${p.pcts.map(([v, l]) => `<span><b>${esc(v)}</b>${esc(l)}</span>`).join("")}</div>` : "";
 function kindText(x) {
-  if (!x.auction) return "Buy It Now" + (x.bestOffer ? " · offers" : "");
+  const was = x.priceWas != null ? ` · was $${x.priceWas.toFixed(2)}` : "";
+  if (!x.auction) return "Buy It Now" + (x.bestOffer ? " · offers" : "") + was;
   let s = "Auction";
   if (x.end) {
     const h = (x.end - Date.now()) / 3600e3;
     s += h <= 0 ? " · ended" : h < 1 ? ` · ${Math.round(h * 60)}m left` : ` · ${Math.floor(h)}h ${Math.round(h % 1 * 60)}m left`;
   }
   if (x.bids != null) s += ` · ${plural(x.bids, "bid")}`;
-  return s;
+  return s + was;
 }
 function scoreBadge(x) {
   if (x.kind === "etb") return x.stamped ? `<span class="sbadge stamp">Stamped ${(x.verdict.score || 0).toFixed(2)}</span>`
