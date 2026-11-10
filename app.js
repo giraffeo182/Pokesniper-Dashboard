@@ -34,7 +34,7 @@ const WORKFLOW_PATH = ".github/workflows/" + WORKFLOW;
 const EBAY_DAILY = 5000;
 const ACTIONS_MONTHLY = 2000;        // free plan, private repo
 // ETB Scanner: one eBay call per promo that's switched on, plus the token
-const etbCalls = () => (S.promos.length ? S.promos.filter(p => !shared().etbOff.has(p.key)).length : 27) + 1;
+const etbCalls = () => (S.promos.length ? S.promos.filter(p => !shared().etbOff.has(p.key)).length : 28) + 1;
 const LANGS = ["japanese", "korean", "chinese", "thai", "indonesian", "italian"];
 const DEMO = new URLSearchParams(location.search).has("demo");
 
