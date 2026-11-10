@@ -665,6 +665,8 @@ $("#runs-pills").onclick = e => {
   S.selectedRun = +b.dataset.run; renderRun();
   const r = S.actions.find(x => x.id === S.selectedRun);
   if (r && !S.jobs[r.id]) loadJobs(r).then(renderRunDetail);
+  // stacked layout: the details are far below the Run now box, so go to them
+  if (matchMedia("(max-width: 900px)").matches) $(".console").scrollIntoView({behavior: "smooth", block: "start"});
 };
 $("#runs-refresh").onclick = () => pollTick(true);
 
