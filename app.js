@@ -32,7 +32,7 @@ const API = "https://api.github.com";
 const WORKFLOW = "scan.yml";
 const WORKFLOW_PATH = ".github/workflows/" + WORKFLOW;
 const EBAY_DAILY = 5000;
-const ACTIONS_MONTHLY = 2000;        // free plan, private repo
+const ACTIONS_MONTHLY = 2000;        // free plan, private repo (a public runner repo has no limit)
 // ETB Scanner: one eBay call per promo that's switched on, plus the token
 const etbCalls = () => (S.promos.length ? S.promos.filter(p => !shared().etbOff.has(p.key)).length : 28) + 1;
 const LANGS = ["japanese", "korean", "chinese", "thai", "indonesian", "italian"];
@@ -40,6 +40,7 @@ const DEMO = new URLSearchParams(location.search).has("demo");
 
 const S = {
   token: "", repo: "",
+  runner: "", runnerPublic: false,   // the repo whose Actions run the scans (settings.json runner_repo), else repo
   cfg: null, cfgSha: null,           // cards.json
   prices: {cards: {}},
   promos: [],                        // promos.json: the ETB Scanner's promos
@@ -132,10 +133,12 @@ async function gh(path, {method = "GET", body, raw = false} = {}) {
   return raw ? res.text() : res.json();
 }
 const repoPath = p => `/repos/${S.repo}${p}`;
-const contentsPath = (p, ref) => repoPath(`/contents/${p.split("/").map(encodeURIComponent).join("/")}` + (ref ? `?ref=${ref}` : ""));
+// Runs, Run now, Cancel and the workflow file: in the runner repo, which may be another one
+const runPath = p => `/repos/${S.runner || S.repo}${p}`;
+const contentsPath = (p, ref, repo = S.repo) => `/repos/${repo}/contents/${p.split("/").map(encodeURIComponent).join("/")}` + (ref ? `?ref=${ref}` : "");
 
-async function getFile(path, ref = "main") {
-  const j = await gh(contentsPath(path, ref));
+async function getFile(path, ref = "main", repo = S.repo) {
+  const j = await gh(contentsPath(path, ref, repo));
   return {text: b64decode(j.content || ""), sha: j.sha};
 }
 async function getRaw(path, ref) { return gh(contentsPath(path, ref), {raw: true}); }
@@ -143,13 +146,13 @@ async function getRaw(path, ref) { return gh(contentsPath(path, ref), {raw: true
 /* Read-modify-write one file on main. mutate(text) returns the new text;
  * on a conflict (someone else saved first) it re-reads and re-applies once.
  * A file that isn't there yet is mutate("") and gets created. */
-async function saveFile(path, mutate, message) {
+async function saveFile(path, mutate, message, repo = S.repo) {
   for (let attempt = 0; ; attempt++) {
-    const cur = await getFile(path).catch(e => { if (e.status === 404) return {text: "", sha: undefined}; throw e; });
+    const cur = await getFile(path, "main", repo).catch(e => { if (e.status === 404) return {text: "", sha: undefined}; throw e; });
     const next = mutate(cur.text);
     if (next === cur.text) return cur;
     try {
-      const r = await gh(contentsPath(path), {method: "PUT", body: {
+      const r = await gh(contentsPath(path, undefined, repo), {method: "PUT", body: {
         message, content: b64encode(next), sha: cur.sha, branch: "main"}});
       return {text: next, sha: r.content.sha};
     } catch (e) {
@@ -164,7 +167,7 @@ async function loadConfig() {
   // Prices: the newest run's copy, else whatever was last pushed to main
   const [cards, prices, settings, yml, changelog, tree, promos] = await Promise.allSettled([
     getFile("cards.json"), getRaw("prices.json", "results").catch(() => getRaw("prices.json", "main")), getFile("settings.json"),
-    getFile(WORKFLOW_PATH), getRaw("changelog.json", "main"),
+    getFile(WORKFLOW_PATH, "main", S.runner || S.repo), getRaw("changelog.json", "main"),
     gh(repoPath("/git/trees/main?recursive=1")), getRaw("promos.json", "main"),
   ]);
   if (promos.status === "fulfilled") try {
@@ -185,7 +188,7 @@ async function loadConfig() {
   }
 }
 async function loadActions() {
-  const j = await gh(repoPath(`/actions/workflows/${WORKFLOW}/runs?per_page=25`));
+  const j = await gh(runPath(`/actions/workflows/${WORKFLOW}/runs?per_page=25`));
   const before = new Map(S.actions.map(r => [r.id, r.status]));
   S.actions = j.workflow_runs || [];
   const finished = S.actions.filter(r => r.status === "completed" && before.has(r.id) && before.get(r.id) !== "completed");
@@ -602,7 +605,7 @@ $("#rn-go").onclick = async () => {
   btn.disabled = true; btn.textContent = "Starting…";
   const clicked = Date.now(), known = new Set(S.actions.map(r => r.id));
   try {
-    await gh(repoPath(`/actions/workflows/${WORKFLOW}/dispatches`), {method: "POST", body: {ref: "main", inputs: {
+    await gh(runPath(`/actions/workflows/${WORKFLOW}/dispatches`), {method: "POST", body: {ref: "main", inputs: {
       etb: String($("#rn-etb").checked), hunter: String($("#rn-hunter").checked),
       email: String($("#rn-email").checked), hunter_args: runArgs().join(" "),
     }}});
@@ -671,7 +674,7 @@ $("#runs-pills").onclick = e => {
 $("#runs-refresh").onclick = () => pollTick(true);
 
 async function loadJobs(r) {
-  try { S.jobs[r.id] = await gh(repoPath(`/actions/runs/${r.id}/jobs`)); } catch (e) {}
+  try { S.jobs[r.id] = await gh(runPath(`/actions/runs/${r.id}/jobs`)); } catch (e) {}
 }
 
 const ICON = {
@@ -707,7 +710,7 @@ function renderRunDetail() {
   const cancel = $("#run-cancel");
   if (cancel) cancel.onclick = async () => {
     if (!confirm("Cancel this run? Anything it already found stays marked as seen only if it got that far.")) return;
-    try { await gh(repoPath(`/actions/runs/${r.id}/cancel`), {method: "POST"}); toast("Cancelling…"); schedulePoll(1500); }
+    try { await gh(runPath(`/actions/runs/${r.id}/cancel`), {method: "POST"}); toast("Cancelling…"); schedulePoll(1500); }
     catch (e) { toast("Couldn't cancel", e.message, "bad"); }
   };
 
@@ -745,7 +748,10 @@ function renderRunDetail() {
   patch($("#run-steps"), html);
 }
 function stepName(n) {
-  return {"Scan and email": "Scan eBay, check photos, email", "Publish results for the dashboard": "Publish results for this dashboard",
+  return {"Run": "Scan eBay, check photos, email", "Publish": "Publish results for this dashboard",
+          "Load state": "Load the seen lists", "Save state": "Save the seen lists", "Prices": "Fetch today's market prices",
+          "Catalog": "Refresh the card catalog", "First run": "Start from the PC's seen lists", "Get code": "Get the code",
+          "Scan and email": "Scan eBay, check photos, email", "Publish results for the dashboard": "Publish results for this dashboard",
           "Restore seen lists from the last run": "Load the seen lists", "Save seen lists for the next run": "Save the seen lists",
           "Keep the reports and logs for 14 days": "Keep the reports and logs", "Refresh market prices": "Fetch today's market prices"}[n] || n;
 }
@@ -2264,7 +2270,7 @@ document.addEventListener("click", async e => {
   PR.starting = true; renderPricesAge();
   const clicked = Date.now(), known = new Set(S.actions.map(r => r.id));
   try {
-    await gh(repoPath(`/actions/workflows/${WORKFLOW}/dispatches`), {method: "POST", body: {ref: "main", inputs: {
+    await gh(runPath(`/actions/workflows/${WORKFLOW}/dispatches`), {method: "POST", body: {ref: "main", inputs: {
       etb: "false", hunter: "false", email: "false", hunter_args: "", prices_only: "true"}}});
     for (let i = 0; i < 12; i++) {                // GitHub doesn't say which run it started
       await sleep(i ? 2500 : 1500);
@@ -2422,13 +2428,15 @@ function renderSchedule() {
   meter($("#sc-calls-m"), calls / EBAY_DAILY, true);
   const what = [scheduledOn("hunter") && plural(cards.length, "card"), scheduledOn("etb") && "ETB promos"].filter(Boolean).join(" + ") || "nothing ticked in Settings";
   $("#sc-calls-h").textContent = `${plural(perDay, "run")} × ~${scheduledCalls(cards).toLocaleString()} calls (${what})`;
-  $("#sc-mins").innerHTML = `${Math.round(mins).toLocaleString()} <small>of ${ACTIONS_MONTHLY.toLocaleString()}</small>`;
-  meter($("#sc-mins-m"), mins / ACTIONS_MONTHLY, true);
-  $("#sc-mins-h").textContent = `~${Math.ceil(minutesPerRun())} min a run, rounded up the way GitHub bills it`;
+  $("#sc-mins").innerHTML = S.runnerPublic ? `${Math.round(mins).toLocaleString()} <small>free, no limit</small>`
+    : `${Math.round(mins).toLocaleString()} <small>of ${ACTIONS_MONTHLY.toLocaleString()}</small>`;
+  meter($("#sc-mins-m"), S.runnerPublic ? 0 : mins / ACTIONS_MONTHLY, true);
+  $("#sc-mins-h").textContent = S.runnerPublic ? `~${Math.ceil(minutesPerRun())} min a run, free: the runner repo is public`
+    : `~${Math.ceil(minutesPerRun())} min a run, rounded up the way GitHub bills it`;
   $("#sc-window").textContent = every
     ? `Auctions get reported once they're within ${every + 1} hours of ending (the gap between runs plus an hour, so none close unseen). Saving updates that too.`
     : "";
-  const over = calls > EBAY_DAILY || mins > ACTIONS_MONTHLY;
+  const over = calls > EBAY_DAILY || (!S.runnerPublic && mins > ACTIONS_MONTHLY);
   $("#sc-state").innerHTML = over ? `<span class="bad-t">Over a limit — runs would start failing partway.</span>` : SC.dirty ? "Unsaved changes" : "";
   $("#sc-save").disabled = !SC.dirty || SC.every == null || !cur.ok;
 }
@@ -2447,7 +2455,7 @@ $("#sc-save").onclick = async () => {
     const r = await saveFile(WORKFLOW_PATH, text => {
       if (!SCHED_RE.test(text)) throw new Error("The workflow file has no schedule markers.");
       return text.replace(SCHED_RE, `$1${scheduleBlock(every, start)}$3`);
-    }, `Dashboard: schedule ${desc}`);
+    }, `Dashboard: schedule ${desc}`, S.runner || S.repo);
     S.yml = r.text; S.ymlSha = r.sha;
     if (every) {
       const s = await saveFile("settings.json", text => {
@@ -2489,7 +2497,7 @@ function renderSettings() {
     : !f.hunter ? "Card Hunter is off, so these options below don't apply until it's back on." : "";
   $("#st-save").disabled = !ST.dirty;
   $("#st-state").textContent = ST.dirty ? "Unsaved changes" : "";
-  $("#st-account").innerHTML = `Signed in to <b>${esc(S.repo)}</b>${DEMO ? " (demo data)" : ""}. The token is saved in this browser only.
+  $("#st-account").innerHTML = `Signed in to <b>${esc(S.repo)}</b>${S.runner && S.runner !== S.repo ? `, scans run in <b>${esc(S.runner)}</b>` : ""}${DEMO ? " (demo data)" : ""}. The token is saved in this browser only.
     To use the dashboard on another device, sign in there with the same token.`;
 }
 function stDirty() { ST.dirty = true; renderSettings(); }
@@ -2600,6 +2608,22 @@ async function signIn(token, repo) {
   if (!r.permissions?.push) throw new GhError("This token can read the repo but not change it. Give it Contents, Actions and Workflows: Read and write.", 403);
   if (!r.private && !DEMO) toast("Heads up: this repo is public", "Anyone can see its cards and results.", "warn");
   store.set("token", S.token); store.set("repo", S.repo);
+  await findRunner();
+}
+/* settings.json's runner_repo: a public repo that runs the scans (free
+ * minutes) while the code and results stay here. None = this repo. */
+async function findRunner() {
+  S.runner = S.repo; S.runnerPublic = false;
+  if (DEMO) return;
+  let want = "";
+  try { want = (JSON.parse(await getRaw("settings.json", "main")).runner_repo || "").trim(); } catch (e) {}
+  if (!want || want === S.repo) return;
+  try {
+    const r = await gh(`/repos/${want}`);
+    S.runner = want; S.runnerPublic = !r.private;
+  } catch (e) {
+    toast("Can't reach the runner repo", `${want}: give this token access to it too (Actions, Contents and Workflows: Read and write). Showing runs from ${S.repo} meanwhile.`, "bad");
+  }
 }
 $("#si-go").onclick = async () => {
   const token = $("#si-token").value, repo = $("#si-repo").value;
